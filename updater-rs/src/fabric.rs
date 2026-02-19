@@ -43,8 +43,16 @@ pub fn install_fabric(
     // 确保 .minecraft 目录存在
     fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
 
+    // Fabric 安装器在非 -noprofile 模式下需要 launcher_profiles.json 存在
+    // 否则会报错退出。创建一个最小的空配置文件。
+    let profiles_json = mc_dir.join("launcher_profiles.json");
+    if !profiles_json.exists() {
+        fs::write(&profiles_json, r#"{"profiles":{}}"#)
+            .context("创建 launcher_profiles.json 失败")?;
+    }
+
     // 调用 Fabric Installer
-    // 注意：不使用 -noprofile，让安装器同时下载原版 MC 客户端
+    // 不使用 -noprofile，让安装器同时下载原版 MC 客户端
     let output = Command::new(&java)
         .arg("-jar")
         .arg(&installer_jar)
