@@ -1,7 +1,8 @@
 // ============================================================
 // update.rs — 更新协调器
 // ============================================================
-// 这是更新逻辑的核心。它按顺序执行三个阶段：
+// 完整流程（四个阶段）：
+//   阶段 0: 首次安装自举（下载 JRE、PCL2、工具 jar）
 //   阶段 1: 检查版本差异
 //   阶段 2: 安装新版本 MC + Fabric（如果需要）
 //   阶段 3: 同步模组和配置
@@ -9,9 +10,10 @@
 // 通过回调函数 (callback) 向 GUI 报告进度。
 // ============================================================
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::path::Path;
 
+use crate::bootstrap;
 use crate::fabric;
 use crate::packwiz;
 use crate::version;
@@ -26,7 +28,7 @@ pub struct Progress {
 }
 
 impl Progress {
-    fn new(percent: u32, message: impl Into<String>) -> Self {
+    pub fn new(percent: u32, message: impl Into<String>) -> Self {
         Self {
             percent,
             message: message.into(),
@@ -57,25 +59,48 @@ pub fn run_update(
     on_progress: &dyn Fn(Progress),
 ) -> Result<UpdateResult> {
     // ─────────────────────────────────────────────
-    // 阶段 1: 检查版本
+    // 阶段 0+1: 拉取远程版本 + 首次安装
     // ─────────────────────────────────────────────
-    on_progress(Progress::new(5, "正在检查更新..."));
+    on_progress(Progress::new(1, "正在连接更新服务器..."));
 
     // 尝试拉取远程版本信息
     let remote = match version::fetch_remote_version() {
         Ok(v) => v,
         Err(e) => {
-            // 网络失败 → 离线模式
-            eprintln!("网络检查失败，进入离线模式: {:#}", e);
-            on_progress(Progress::new(100, "离线模式 — 跳过更新"));
-            return Ok(UpdateResult::Offline);
+            // 网络失败：检查是否已安装过
+            if bootstrap::is_bootstrapped(base_dir) {
+                // 已安装 → 离线模式，跳过更新直接启动
+                eprintln!("网络检查失败，进入离线模式: {:#}", e);
+                on_progress(Progress::new(100, "离线模式 — 跳过更新"));
+                return Ok(UpdateResult::Offline);
+            } else {
+                // 未安装 → 无法继续，首次运行需要网络
+                bail!(
+                    "首次运行需要网络连接来下载必要组件。\n\
+                     请检查网络后重试。\n\n\
+                     错误详情: {:#}",
+                    e
+                );
+            }
         }
     };
 
-    // 读取本地版本
+    // ─────────────────────────────────────────────
+    // 阶段 0: 首次安装自举（如果需要）
+    // ─────────────────────────────────────────────
+    if bootstrap::needs_bootstrap(base_dir) {
+        on_progress(Progress::new(2, "首次运行，正在下载组件..."));
+        bootstrap::run_bootstrap(base_dir, &remote.downloads, on_progress)?;
+    } else {
+        on_progress(Progress::new(50, "组件检查完毕"));
+    }
+
+    // ─────────────────────────────────────────────
+    // 阶段 1: 检查版本
+    // ─────────────────────────────────────────────
     let local = version::read_local_version(base_dir);
 
-    on_progress(Progress::new(15, format!(
+    on_progress(Progress::new(55, format!(
         "远程版本: MC {} / Fabric {}",
         remote.mc_version, remote.fabric_version
     )));
@@ -84,21 +109,21 @@ pub fn run_update(
     // 阶段 2: 大版本升级（如果需要）
     // ─────────────────────────────────────────────
     if version::needs_version_upgrade(&remote, &local) {
-        on_progress(Progress::new(20, format!(
+        on_progress(Progress::new(58, format!(
             "正在升级到 MC {} ...",
             remote.mc_version
         )));
 
         // 2a. 安装新版本 Fabric
-        on_progress(Progress::new(25, "正在安装 Fabric..."));
+        on_progress(Progress::new(60, "正在安装 Fabric..."));
         fabric::install_fabric(base_dir, &remote.mc_version, &remote.fabric_version)?;
 
         // 2b. 清理旧版本目录
-        on_progress(Progress::new(40, "正在清理旧版本..."));
+        on_progress(Progress::new(70, "正在清理旧版本..."));
         fabric::cleanup_old_versions(base_dir, &remote.version_tag)?;
 
         // 2c. 清空旧模组（新版本模组由 packwiz 重新下载）
-        on_progress(Progress::new(50, "正在清理旧模组..."));
+        on_progress(Progress::new(75, "正在清理旧模组..."));
         fabric::clean_mods_dir(base_dir)?;
 
         // 2d. 保存新的本地版本记录
@@ -109,15 +134,15 @@ pub fn run_update(
         };
         version::save_local_version(base_dir, &new_local)?;
 
-        on_progress(Progress::new(55, "版本升级完成"));
+        on_progress(Progress::new(78, "版本升级完成"));
     } else {
-        on_progress(Progress::new(55, "版本已是最新"));
+        on_progress(Progress::new(78, "版本已是最新"));
     }
 
     // ─────────────────────────────────────────────
     // 阶段 3: 同步模组和配置
     // ─────────────────────────────────────────────
-    on_progress(Progress::new(60, "正在同步模组..."));
+    on_progress(Progress::new(80, "正在同步模组..."));
 
     packwiz::sync_modpack(base_dir, &remote.pack_url)?;
 

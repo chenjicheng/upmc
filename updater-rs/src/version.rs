@@ -39,6 +39,33 @@ pub struct ServerVersion {
 
     /// packwiz pack.toml 的远程 URL
     pub pack_url: String,
+
+    /// 可选的下载 URL 配置（首次安装时自动下载组件）
+    #[serde(default)]
+    pub downloads: Downloads,
+}
+
+/// 首次安装所需的下载 URL 集合。
+///
+/// jre_url / packwiz_bootstrap_url 有内置默认值，
+/// pcl2_url / fabric_installer_url 需管理员配置。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Downloads {
+    /// Java 运行时下载地址（.zip）
+    #[serde(default)]
+    pub jre_url: Option<String>,
+
+    /// PCL2 启动器下载地址（管理员托管在 GitHub Releases 等）
+    #[serde(default)]
+    pub pcl2_url: Option<String>,
+
+    /// packwiz-installer-bootstrap.jar 下载地址
+    #[serde(default)]
+    pub packwiz_bootstrap_url: Option<String>,
+
+    /// Fabric Installer jar 下载地址
+    #[serde(default)]
+    pub fabric_installer_url: Option<String>,
 }
 
 /// 本地已安装的版本信息（保存在 local.json）

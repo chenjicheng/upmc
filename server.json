@@ -2,5 +2,12 @@
     "mc_version": "1.21.4",
     "fabric_version": "0.16.9",
     "version_tag": "fabric-loader-0.16.9-1.21.4",
-    "pack_url": "https://YOUR_GITHUB_USERNAME.github.io/upmc-dist/pack.toml"
+    "pack_url": "https://YOUR_GITHUB_USERNAME.github.io/upmc/pack.toml",
+
+    "downloads": {
+        "jre_url": null,
+        "pcl2_url": "https://github.com/YOUR_GITHUB_USERNAME/upmc/releases/download/tools/PCL2.exe",
+        "packwiz_bootstrap_url": null,
+        "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar"
+    }
 }

@@ -11,6 +11,7 @@
 // 这个属性让 Windows 不会弹出 cmd 窗口
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bootstrap;
 mod config;
 mod fabric;
 mod gui;

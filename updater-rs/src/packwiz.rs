@@ -30,14 +30,11 @@ use crate::config;
 /// `-g` 让 packwiz-installer 不弹出自己的窗口（我们有自己的 GUI）
 /// `-s client` 指定只同步客户端需要的文件
 pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
-    let java = base_dir.join(config::JAVA_EXE);
+    let java = config::find_java(base_dir)?;
     let bootstrap_jar = base_dir.join(config::PACKWIZ_BOOTSTRAP_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 
     // 检查必要文件
-    if !java.exists() {
-        bail!("找不到 Java: {}", java.display());
-    }
     if !bootstrap_jar.exists() {
         bail!(
             "找不到 packwiz-installer-bootstrap: {}",

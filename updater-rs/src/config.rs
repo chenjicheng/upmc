@@ -1,44 +1,93 @@
 // ============================================================
-// config.rs — 配置常量
+// config.rs — 配置常量 + Java 查找
 // ============================================================
 // 集中管理所有可配置的路径和 URL。
 // 修改这里的常量即可适配不同服务器。
 // ============================================================
 
+use anyhow::{bail, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+// ── 远程配置 ──
+
 /// 远程 server.json 的 URL（GitHub Pages 托管）
-/// 更新器启动时会从这个地址拉取最新的版本信息。
-/// 格式见项目根目录的 server.json 模板。
 pub const REMOTE_SERVER_JSON_URL: &str =
-    "https://YOUR_GITHUB_USERNAME.github.io/upmc-dist/server.json";
+    "https://YOUR_GITHUB_USERNAME.github.io/upmc/server.json";
 
-/// 本地版本记录文件名（相对于更新器 exe 所在目录）
-/// 更新器会在这个文件里记录当前已安装的 MC 版本和 Fabric 版本，
-/// 用于和远程 server.json 对比，判断是否需要升级。
+// ── 本地路径（相对于 exe 所在目录） ──
+
 pub const LOCAL_VERSION_FILE: &str = "updater/local.json";
-
-/// packwiz-installer-bootstrap.jar 的路径（相对于 exe 所在目录）
 pub const PACKWIZ_BOOTSTRAP_JAR: &str = "updater/packwiz-installer-bootstrap.jar";
-
-/// fabric-installer.jar 的路径（相对于 exe 所在目录）
 pub const FABRIC_INSTALLER_JAR: &str = "updater/fabric-installer.jar";
-
-/// 内置 JRE 的 java.exe 路径（相对于 exe 所在目录）
-pub const JAVA_EXE: &str = "jre/bin/java.exe";
-
-/// .minecraft 目录路径（相对于 exe 所在目录）
 pub const MINECRAFT_DIR: &str = ".minecraft";
-
-/// PCL2 启动器路径（相对于 exe 所在目录）
 pub const PCL2_EXE: &str = "PCL/Plain Craft Launcher 2.exe";
+pub const LOCAL_JRE_JAVA: &str = "jre/bin/java.exe";
 
-/// 窗口标题
+// ── 默认下载 URL（可被 server.json 的 downloads 字段覆盖） ──
+
+/// Adoptium JRE 21 (Windows x64 .zip) — 首次运行自动下载
+pub const DEFAULT_JRE_URL: &str =
+    "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jre/hotspot/normal/eclipse";
+
+/// packwiz-installer-bootstrap 官方最新版
+pub const DEFAULT_PACKWIZ_BOOTSTRAP_URL: &str =
+    "https://github.com/packwiz/packwiz-installer-bootstrap/releases/latest/download/packwiz-installer-bootstrap.jar";
+
+// ── GUI ──
+
 pub const WINDOW_TITLE: &str = "我的服务器 - 更新器";
 
-/// 窗口宽度（像素）
-pub const WINDOW_WIDTH: i32 = 420;
+// ── 超时 ──
 
-/// 窗口高度（像素）
-pub const WINDOW_HEIGHT: i32 = 200;
-
-/// HTTP 请求超时时间（秒）
+/// 小文件请求超时（server.json 等）
 pub const HTTP_TIMEOUT_SECS: u64 = 30;
+/// 大文件下载超时（JRE ~50MB）
+pub const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
+
+// ── PCL2 配置模板 ──
+
+/// 首次安装时自动生成的 Setup.ini
+pub const PCL2_SETUP_INI: &str = "; ===== 服务器专属启动器 =====\r\nLogo=我的服务器\r\nLogoSub=专属启动器\r\nHiddenPageDownload=True\r\nVersionArgumentIndie=2\r\n";
+
+// ── Java 查找 ──
+
+/// 自动查找 Java 可执行文件。
+///
+/// 搜索顺序：
+///   1. 本地下载的 JRE (jre/bin/java.exe)
+///   2. JAVA_HOME 环境变量
+///   3. 系统 PATH
+pub fn find_java(base_dir: &Path) -> Result<PathBuf> {
+    // 1. 本地 JRE（bootstrap 阶段下载的）
+    let local = base_dir.join(LOCAL_JRE_JAVA);
+    if local.exists() {
+        return Ok(local);
+    }
+
+    // 2. JAVA_HOME
+    if let Ok(java_home) = std::env::var("JAVA_HOME") {
+        let p = PathBuf::from(&java_home).join("bin/java.exe");
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+
+    // 3. PATH（使用 where 命令查找）
+    if let Ok(output) = Command::new("where").arg("java").output() {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(first_line) = stdout.lines().next() {
+                let p = PathBuf::from(first_line.trim());
+                if p.exists() {
+                    return Ok(p);
+                }
+            }
+        }
+    }
+
+    bail!(
+        "找不到 Java。\n预期位置: {}\n请确保首次安装已完成。",
+        local.display()
+    )
+}
