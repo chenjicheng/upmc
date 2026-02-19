@@ -13,8 +13,8 @@ launcher/PCL/*.exe
 # Minecraft 运行时目录
 launcher/.minecraft/
 
-# 分发仓库本地 clone
-upmc-dist/
+# 构建产物
+dist/
 
 # OS 生成文件
 Thumbs.db
