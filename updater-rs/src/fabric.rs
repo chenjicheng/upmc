@@ -9,8 +9,10 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use crate::config;
 
@@ -44,15 +46,17 @@ pub fn install_fabric(
     fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
 
     // Fabric 安装器在非 -noprofile 模式下需要 launcher_profiles.json 存在
-    // 否则会报错退出。创建一个最小的空配置文件。
     let profiles_json = mc_dir.join("launcher_profiles.json");
     if !profiles_json.exists() {
         fs::write(&profiles_json, r#"{"profiles":{}}"#)
             .context("创建 launcher_profiles.json 失败")?;
     }
 
-    // 调用 Fabric Installer
-    // 不使用 -noprofile，让安装器同时下载原版 MC 客户端
+    // 先确保原版 MC 客户端已下载
+    // Fabric 安装器不会下载原版，PCL2 需要原版作为前置
+    download_vanilla_version(&mc_dir, mc_version)?;
+
+    // 调用 Fabric Installer（使用 -noprofile，PCL2 不需要）
     let output = Command::new(&java)
         .arg("-jar")
         .arg(&installer_jar)
@@ -63,6 +67,7 @@ pub fn install_fabric(
         .arg(mc_version)
         .arg("-loader")
         .arg(fabric_version)
+        .arg("-noprofile")
         .output()
         .context("启动 Fabric 安装器失败")?;
 
@@ -148,6 +153,112 @@ pub fn clean_mods_dir(base_dir: &Path) -> Result<()> {
                         .with_context(|| format!("删除模组失败: {}", path.display()))?;
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+// ────────────────────────────────────────────────────────────
+// 原版 MC 下载
+// ────────────────────────────────────────────────────────────
+
+/// Mojang 版本清单 API
+const VERSION_MANIFEST_URL: &str =
+    "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+
+/// 下载原版 MC 客户端的 version JSON 和 client.jar。
+///
+/// Fabric 安装器不下载原版客户端，只安装 loader。
+/// PCL2 需要原版 MC 作为前置版本才能启动 Fabric。
+///
+/// 流程：
+///   1. 从 Mojang API 获取版本清单
+///   2. 找到对应版本的 JSON URL
+///   3. 下载 version JSON → versions/<ver>/<ver>.json
+///   4. 从 JSON 中提取 client jar URL
+///   5. 下载 client.jar → versions/<ver>/<ver>.jar
+fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
+    let ver_dir = mc_dir.join("versions").join(mc_version);
+    let ver_json_path = ver_dir.join(format!("{}.json", mc_version));
+    let ver_jar_path = ver_dir.join(format!("{}.jar", mc_version));
+
+    // 如果已经存在就跳过
+    if ver_json_path.exists() && ver_jar_path.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&ver_dir)
+        .with_context(|| format!("创建版本目录失败: {}", ver_dir.display()))?;
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS))
+        .build();
+
+    // 1. 获取版本清单
+    let manifest_str = agent
+        .get(VERSION_MANIFEST_URL)
+        .call()
+        .context("获取 Mojang 版本清单失败")?
+        .into_string()
+        .context("读取版本清单失败")?;
+
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_str)
+        .context("解析版本清单 JSON 失败")?;
+
+    // 2. 找到目标版本的 URL
+    let versions = manifest["versions"]
+        .as_array()
+        .context("版本清单格式错误")?;
+
+    let version_url = versions
+        .iter()
+        .find(|v| v["id"].as_str() == Some(mc_version))
+        .and_then(|v| v["url"].as_str())
+        .with_context(|| format!("在 Mojang 清单中找不到版本 {}", mc_version))?
+        .to_string();
+
+    // 3. 下载 version JSON
+    if !ver_json_path.exists() {
+        let ver_json_str = agent
+            .get(&version_url)
+            .call()
+            .with_context(|| format!("下载 MC {} version JSON 失败", mc_version))?
+            .into_string()
+            .context("读取 version JSON 失败")?;
+
+        fs::write(&ver_json_path, &ver_json_str)
+            .with_context(|| format!("写入 {} 失败", ver_json_path.display()))?;
+    }
+
+    // 4. 从 version JSON 中提取 client jar URL 并下载
+    if !ver_jar_path.exists() {
+        let ver_json_str = fs::read_to_string(&ver_json_path)
+            .context("读取 version JSON 失败")?;
+        let ver_json: serde_json::Value = serde_json::from_str(&ver_json_str)
+            .context("解析 version JSON 失败")?;
+
+        let client_url = ver_json["downloads"]["client"]["url"]
+            .as_str()
+            .context("version JSON 中找不到客户端下载地址")?;
+
+        // 下载 client.jar（约 20-30 MB）
+        let response = agent
+            .get(client_url)
+            .call()
+            .with_context(|| format!("下载 MC {} 客户端 jar 失败", mc_version))?;
+
+        let mut reader = response.into_reader();
+        let mut file = fs::File::create(&ver_jar_path)
+            .with_context(|| format!("创建 {} 失败", ver_jar_path.display()))?;
+
+        let mut buf = [0u8; 65536];
+        loop {
+            let n = reader.read(&mut buf).context("读取客户端 jar 数据失败")?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n]).context("写入客户端 jar 失败")?;
         }
     }
 
