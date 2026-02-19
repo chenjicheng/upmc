@@ -24,11 +24,11 @@ pub const MINECRAFT_DIR: &str = ".minecraft";
 pub const PCL2_EXE: &str = "PCL/Plain Craft Launcher 2.exe";
 pub const LOCAL_JRE_JAVA: &str = "jre/bin/java.exe";
 
-// ── 默认下载 URL（可被 server.json 的 downloads 字段覆盖） ──
+// ── 安装目录 ──
 
-/// packwiz-installer-bootstrap 官方最新版
-pub const DEFAULT_PACKWIZ_BOOTSTRAP_URL: &str =
-    "https://github.com/packwiz/packwiz-installer-bootstrap/releases/latest/download/packwiz-installer-bootstrap.jar";
+/// 组件安装子目录（相对于 exe 所在目录）
+/// exe 本身在外层，所有下载内容（PCL2、JRE、.minecraft 等）在此子目录下
+pub const INSTALL_DIR: &str = "CJC整合包";
 
 // ── GUI ──
 

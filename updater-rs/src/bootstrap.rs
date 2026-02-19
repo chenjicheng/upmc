@@ -108,7 +108,7 @@ pub fn run_bootstrap(
         let packwiz_url = downloads
             .packwiz_bootstrap_url
             .as_deref()
-            .unwrap_or(config::DEFAULT_PACKWIZ_BOOTSTRAP_URL);
+            .context("server.json 中未配置 packwiz 下载地址 (downloads.packwiz_bootstrap_url)")?;
 
         on_progress(Progress::new(39, "正在下载模组同步器..."));
         download_file(packwiz_url, &packwiz_jar, on_progress, 39, 42)?;

@@ -31,15 +31,16 @@ fn main() {
     gui::UpdaterApp::run(base_dir);
 }
 
-/// 获取当前 exe 文件所在的目录。
+/// 获取组件安装的基准目录。
 ///
-/// 这样无论玩家把文件夹放在哪里，路径都能正确解析。
-/// 例如：如果 exe 在 `D:\Games\我的服务器\我的服务器.exe`，
-/// 返回 `D:\Games\我的服务器\`。
+/// 返回 exe 所在目录下的 `CJC整合包/` 子目录。
+/// 例如：如果 exe 在 `D:\Games\我的服务器.exe`，
+/// 返回 `D:\Games\CJC整合包\`。
 fn get_base_dir() -> PathBuf {
-    env::current_exe()
+    let exe_dir = env::current_exe()
         .expect("无法获取 exe 路径")
         .parent()
         .expect("无法获取 exe 所在目录")
-        .to_path_buf()
+        .to_path_buf();
+    exe_dir.join(config::INSTALL_DIR)
 }
