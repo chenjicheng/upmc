@@ -44,6 +44,7 @@ pub fn install_fabric(
     fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
 
     // 调用 Fabric Installer
+    // 注意：不使用 -noprofile，让安装器同时下载原版 MC 客户端
     let output = Command::new(&java)
         .arg("-jar")
         .arg(&installer_jar)
@@ -54,7 +55,6 @@ pub fn install_fabric(
         .arg(mc_version)
         .arg("-loader")
         .arg(fabric_version)
-        .arg("-noprofile")
         .output()
         .context("启动 Fabric 安装器失败")?;
 
