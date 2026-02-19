@@ -65,11 +65,10 @@ pub fn run_bootstrap(
     // ── 下载 JRE（如果不存在） ──
     let jre_java = base_dir.join("jre/bin/java.exe");
     if !jre_java.exists() {
-        // 优先用 server.json 里的 URL，否则用默认 Adoptium 地址
         let jre_url = downloads
             .jre_url
             .as_deref()
-            .unwrap_or(config::DEFAULT_JRE_URL);
+            .context("server.json 中未配置 JRE 下载地址 (downloads.jre_url)")?;
 
         on_progress(Progress::new(5, "正在下载 Java 运行时..."));
         let zip_path = base_dir.join("updater/jre-download.zip");

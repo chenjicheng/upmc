@@ -26,10 +26,6 @@ pub const LOCAL_JRE_JAVA: &str = "jre/bin/java.exe";
 
 // ── 默认下载 URL（可被 server.json 的 downloads 字段覆盖） ──
 
-/// Adoptium JRE 21 (Windows x64 .zip) — 首次运行自动下载
-pub const DEFAULT_JRE_URL: &str =
-    "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jre/hotspot/normal/eclipse";
-
 /// packwiz-installer-bootstrap 官方最新版
 pub const DEFAULT_PACKWIZ_BOOTSTRAP_URL: &str =
     "https://github.com/packwiz/packwiz-installer-bootstrap/releases/latest/download/packwiz-installer-bootstrap.jar";
