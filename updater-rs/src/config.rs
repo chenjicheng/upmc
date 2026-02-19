@@ -44,7 +44,25 @@ pub const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
 // ── PCL2 配置模板 ──
 
 /// 首次安装时自动生成的 Setup.ini
-pub const PCL2_SETUP_INI: &str = "; ===== 服务器专属启动器 =====\r\nLogo=我的服务器\r\nLogoSub=专属启动器\r\nHiddenPageDownload=True\r\nVersionArgumentIndie=2\r\n";
+///
+/// 关键设置：
+///   - SystemLaunchFolder: 指向本地 .minecraft，避免使用 %AppData% 全局目录
+///   - LaunchArgumentJavaAll: 指定本地 JRE，不依赖系统 Java
+///   - VersionArgumentIndie=2: 完全版本隔离
+///   - HiddenPageDownload: 隐藏下载页，防止玩家误操作
+pub const PCL2_SETUP_INI: &str = "\
+; ===== 服务器专属启动器 =====\r\n\
+Logo=我的服务器\r\n\
+LogoSub=专属启动器\r\n\
+; 使用本地 .minecraft 而非全局 %AppData%\r\n\
+SystemLaunchFolder=../.minecraft\r\n\
+; 使用本地 JRE\r\n\
+LaunchArgumentJavaAll=../jre/bin/javaw.exe\r\n\
+; 版本完全隔离\r\n\
+VersionArgumentIndie=2\r\n\
+; 隐藏下载页面\r\n\
+HiddenPageDownload=True\r\n\
+";
 
 // ── Java 查找 ──
 
