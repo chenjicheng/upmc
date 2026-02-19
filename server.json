@@ -1,0 +1,6 @@
+{
+    "mc_version": "1.21.4",
+    "fabric_version": "0.16.9",
+    "version_tag": "fabric-loader-0.16.9-1.21.4",
+    "pack_url": "https://YOUR_GITHUB_USERNAME.github.io/upmc-dist/pack.toml"
+}

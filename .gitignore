@@ -1,0 +1,27 @@
+# Rust 构建产物
+updater-rs/target/
+
+# Java 运行时（太大，不入库）
+launcher/jre/
+
+# Jar 文件（从官方下载，不入库）
+launcher/updater/*.jar
+
+# PCL2 本体（版权原因不入库）
+launcher/PCL/*.exe
+
+# Minecraft 运行时目录
+launcher/.minecraft/
+
+# 分发仓库本地 clone
+upmc-dist/
+
+# OS 生成文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
