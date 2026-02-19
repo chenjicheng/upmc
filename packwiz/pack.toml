@@ -1,0 +1,13 @@
+name = "CJC"
+author = "Chen Jicheng"
+version = "1.0.0"
+pack-format = "packwiz:1.1.0"
+
+[index]
+file = "index.toml"
+hash-format = "sha256"
+hash = "8b25f6eb29f1062ac43951cf7032e6821fffc27e4dba5772d55a85c902ef128b"
+
+[versions]
+fabric = "0.18.4"
+minecraft = "1.21.11"

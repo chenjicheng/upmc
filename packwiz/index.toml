@@ -1,0 +1,171 @@
+hash-format = "sha256"
+
+[[files]]
+file = "mods/architectury-api.pw.toml"
+hash = "ff1763afa21669a76a9ca65735944986ec4ef7a0d440b98ee2154aafa46356c8"
+metafile = true
+
+[[files]]
+file = "mods/carpet-tis-addition.pw.toml"
+hash = "f5971140b76f21612359a98991917f10056678d694b2b54a9449dfe67c2e1f96"
+metafile = true
+
+[[files]]
+file = "mods/carpet.pw.toml"
+hash = "fbb61854650a7cdf7eb2244e0599bae2f0541864a9b7cf74f8272972e6bdb18e"
+metafile = true
+
+[[files]]
+file = "mods/cloth-config.pw.toml"
+hash = "a06ef129798265e0d7249426fb0ed5c506725b0460dc3dfdb975b8978480895e"
+metafile = true
+
+[[files]]
+file = "mods/collective.pw.toml"
+hash = "c2a61b492dd0d7a156e15b7572adb40552b94c09658cc3c6d7faf99288d094c7"
+metafile = true
+
+[[files]]
+file = "mods/fabric-api.pw.toml"
+hash = "45abf05e1cc90006aeb65e4e1bbe97da5a1984f547ea8028a077dae68af0ac11"
+metafile = true
+
+[[files]]
+file = "mods/fabric-language-kotlin.pw.toml"
+hash = "408151861cc1b1a4c4e9c8a3550662a2fc36d0ea96ee07b7e96c5d2a6afacf6f"
+metafile = true
+
+[[files]]
+file = "mods/fzzy-config.pw.toml"
+hash = "c5103bd5c497d707072363d1bb994697a62774b8bc79ad5a8c3b33313f824948"
+metafile = true
+
+[[files]]
+file = "mods/gca.pw.toml"
+hash = "b21b68650063888724f29bb2ab3a9e6a419bfde0018029fa711800ee02510220"
+metafile = true
+
+[[files]]
+file = "mods/imblocker-original.pw.toml"
+hash = "3e762b613fcc999880c8b424be3c6c4086fb84083385eb903a143937519b2686"
+metafile = true
+
+[[files]]
+file = "mods/immediatelyfast.pw.toml"
+hash = "9e7bacd24307639764f3b74ae35a562b6becf2701637b816de0eaae15ab714c0"
+metafile = true
+
+[[files]]
+file = "mods/inventory-profiles-next.pw.toml"
+hash = "93b2f668a96e7ef60f6bd15150d6dfc3b40e2c1504f5bcd79dfead63f866edfa"
+metafile = true
+
+[[files]]
+file = "mods/iris.pw.toml"
+hash = "276947b1f9933ca2220a00736aba177e4034ca9a45cad9f258abf762fdb3bb0b"
+metafile = true
+
+[[files]]
+file = "mods/item-scroller.pw.toml"
+hash = "5c2abb405aafd8eba3698b940e1626fe12f12d0e5c998222f341cff1f89b6854"
+metafile = true
+
+[[files]]
+file = "mods/jade.pw.toml"
+hash = "21caf1cc09d510a23284e704cb5211408085d5964e5d6ca129fc0dc175c8fb79"
+metafile = true
+
+[[files]]
+file = "mods/jei.pw.toml"
+hash = "fce2b731ee4e4884f17248e9acfa591fa28e9b1f786272175b8b653aa9e6904b"
+metafile = true
+
+[[files]]
+file = "mods/libipn.pw.toml"
+hash = "036576f257416774276edc60372a1265f28dd6bec765c72fef9aa9d164f2a148"
+metafile = true
+
+[[files]]
+file = "mods/litematica.pw.toml"
+hash = "590d8c454461493a6a60a6efe9a43bcb94231e7b55c7382f1aa209ad7a572f99"
+metafile = true
+
+[[files]]
+file = "mods/lithium.pw.toml"
+hash = "9a74f9345a91af6a0e2c1975e1dd1d26cfcae6fb072a3a0d68fd9de110ab6327"
+metafile = true
+
+[[files]]
+file = "mods/malilib.pw.toml"
+hash = "ad1110e02639ce1dd8afd73ca567d44fbe592c662d656fee567b6c1f7ced308d"
+metafile = true
+
+[[files]]
+file = "mods/mclogs.pw.toml"
+hash = "154a98e64aac0604a6713480e04538da76a00cd76f00c660fca93c9597df8b5f"
+metafile = true
+
+[[files]]
+file = "mods/minihud.pw.toml"
+hash = "a5f622a1035c7aee583c471f49b90ddead222a57213f89664a5e9fc266b5cdf8"
+metafile = true
+
+[[files]]
+file = "mods/modmenu.pw.toml"
+hash = "51ff93e279e03cb3cd77a5be0df777cdcd975d35b5149180d9dc724e47168c76"
+metafile = true
+
+[[files]]
+file = "mods/placeholder-api.pw.toml"
+hash = "ab6def9d98d3f5bf12f78845bdb770a19d5ca590c571e60184e537ffa14dcbee"
+metafile = true
+
+[[files]]
+file = "mods/sodium.pw.toml"
+hash = "9d340481c374a20067d1748c1a4991626bce9d7812f0bdb96072cd7a15d35462"
+metafile = true
+
+[[files]]
+file = "mods/spark.pw.toml"
+hash = "c073f13897a838e3c409e46b8a1d8cb510d6a6584dd815aeadaf4886f1779513"
+metafile = true
+
+[[files]]
+file = "mods/status-effect-bars.pw.toml"
+hash = "3ed900bdfc8331520c122957c64c930a50bd814a722b6367155af675d4bf0e40"
+metafile = true
+
+[[files]]
+file = "mods/syncmatica.pw.toml"
+hash = "2a30c4cf3b1132b219bbf45ce8c4626de461a74f5dd56ada03ae14528a6cbe11"
+metafile = true
+
+[[files]]
+file = "mods/tree-harvester.pw.toml"
+hash = "5e87caea13a44193abf997de56cf3cab2eb9feb1d8be35e0203f06df3552b9c5"
+metafile = true
+
+[[files]]
+file = "mods/tweakeroo.pw.toml"
+hash = "05d3bf3084dd6713858d437880a5cc1e4977e1760deaef31300bb25542c4aa70"
+metafile = true
+
+[[files]]
+file = "mods/worldedit.pw.toml"
+hash = "71c91341cc8ac8773b839d7ca822d8d7084c11a3012e13a10ef0de6daff93796"
+metafile = true
+
+[[files]]
+file = "mods/xaeros-minimap.pw.toml"
+hash = "a61e5977069e33bcb8792164947c214322b115f85ee64187292a527598a0248a"
+metafile = true
+
+[[files]]
+file = "mods/xaeros-world-map.pw.toml"
+hash = "083897a9e8b043d2794d0ee05ffb01e54236f7264fabf852efb2bb8d37c5bdc6"
+metafile = true
+
+[[files]]
+file = "mods/yacl.pw.toml"
+hash = "1113d43c39a9866252a83ee50d16aa3ce6fcf749acd84d58b05ca09eba4d187b"
+metafile = true

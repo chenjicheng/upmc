@@ -1,0 +1,13 @@
+name = "IMBlocker"
+filename = "IMBlocker-6.0.3-neoforge-1.21.9+.jar"
+side = "client"
+
+[download]
+url = "https://cdn.modrinth.com/data/WMDesFsZ/versions/j55gjy9S/IMBlocker-6.0.3-neoforge-1.21.9%2B.jar"
+hash-format = "sha512"
+hash = "d2984f65dd69b772fe25186f23cd73ffd507f955ab53bc7f2827e6ea386f857cb9aa6088fb206a6c7b7bb7235da404de38e1fca0c52a05010fc0efce56bbe016"
+
+[update]
+[update.modrinth]
+mod-id = "WMDesFsZ"
+version = "j55gjy9S"
