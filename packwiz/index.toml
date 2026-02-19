@@ -42,7 +42,7 @@ metafile = true
 
 [[files]]
 file = "mods/gca.pw.toml"
-hash = "b21b68650063888724f29bb2ab3a9e6a419bfde0018029fa711800ee02510220"
+hash = "23819b323173633ff267330ddf218d20890aaaeb2a383f2ba81ac6812abbe963"
 metafile = true
 
 [[files]]
@@ -142,7 +142,7 @@ metafile = true
 
 [[files]]
 file = "mods/tree-harvester.pw.toml"
-hash = "5e87caea13a44193abf997de56cf3cab2eb9feb1d8be35e0203f06df3552b9c5"
+hash = "6ba9df7457db51b556d22c0d50201071dbbbf234c6e606f2674ee9155850a8c5"
 metafile = true
 
 [[files]]
@@ -152,7 +152,7 @@ metafile = true
 
 [[files]]
 file = "mods/worldedit.pw.toml"
-hash = "71c91341cc8ac8773b839d7ca822d8d7084c11a3012e13a10ef0de6daff93796"
+hash = "b227e85e0e318e43baa9dcc63af10a9b850e0055ee3c1ac52b79c7557e813637"
 metafile = true
 
 [[files]]
