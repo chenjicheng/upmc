@@ -1,6 +1,6 @@
 name = "WorldEdit"
 filename = "worldedit-mod-7.4.0.jar"
-side = "server"
+side = "both"
 
 [download]
 url = "https://cdn.modrinth.com/data/1u6JkXh5/versions/o645q0Oo/worldedit-mod-7.4.0.jar"
