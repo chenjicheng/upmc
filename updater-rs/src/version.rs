@@ -66,6 +66,18 @@ pub struct Downloads {
     /// Fabric Installer jar 下载地址
     #[serde(default)]
     pub fabric_installer_url: Option<String>,
+
+    /// 首次安装设置包下载地址（.zip）
+    /// 解压到 .minecraft/ 目录，包含默认游戏设置和模组配置。
+    /// 仅首次安装时下载，不会覆盖已有的个人设置。
+    ///
+    /// ZIP 结构示例：
+    ///   options.txt          ← 视频/按键/语言
+    ///   servers.dat          ← 预填服务器地址
+    ///   config/              ← 模组默认配置
+    ///   shaderpacks/         ← 光影预设
+    #[serde(default)]
+    pub settings_url: Option<String>,
 }
 
 /// 本地已安装的版本信息（保存在 local.json）

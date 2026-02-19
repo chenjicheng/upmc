@@ -137,6 +137,28 @@ pub fn run_bootstrap(
             .context("写入 Setup.ini 失败")?;
     }
 
+    // ── 下载并解压默认设置包（仅首次） ──
+    let settings_marker = base_dir.join("updater/.settings_installed");
+    if !settings_marker.exists() {
+        if let Some(ref settings_url) = downloads.settings_url {
+            on_progress(Progress::new(48, "正在下载默认设置..."));
+            let zip_path = base_dir.join("updater/settings-download.zip");
+            download_file(settings_url, &zip_path, on_progress, 48, 49)?;
+
+            on_progress(Progress::new(49, "正在应用默认设置..."));
+            let mc_dir = base_dir.join(config::MINECRAFT_DIR);
+            fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
+            extract_settings_zip(&zip_path, &mc_dir)
+                .context("解压设置包失败")?;
+
+            // 清理下载的 zip
+            fs::remove_file(&zip_path).ok();
+        }
+        // 写入标记文件，防止后续运行重复解压覆盖玩家设置
+        fs::write(&settings_marker, "installed")
+            .context("写入设置安装标记失败")?;
+    }
+
     on_progress(Progress::new(50, "首次安装完成"));
     Ok(())
 }
@@ -302,4 +324,50 @@ fn detect_common_prefix(archive: &mut zip::ZipArchive<fs::File>) -> Option<Strin
     }
 
     Some(prefix)
+}
+
+/// 解压设置包 ZIP 到目标目录（不去除顶层目录）。
+///
+/// 设置包内的文件应直接映射到 `.minecraft/` 的目录结构，例如：
+///   options.txt  → .minecraft/options.txt
+///   servers.dat  → .minecraft/servers.dat
+///   config/      → .minecraft/config/
+///
+/// 不会覆盖已存在的文件，以保留玩家的个人设置。
+fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
+    let file = fs::File::open(zip_path)
+        .with_context(|| format!("打开设置包 ZIP 失败: {}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).context("读取设置包 ZIP 失败")?;
+
+    fs::create_dir_all(dest)?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .with_context(|| format!("读取设置包条目 #{} 失败", i))?;
+
+        let name = entry.name().to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let out_path = dest.join(&name);
+
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path)?;
+        } else {
+            // 不覆盖已有文件，保护玩家现有设置
+            if out_path.exists() {
+                continue;
+            }
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut outfile = fs::File::create(&out_path)
+                .with_context(|| format!("创建设置文件失败: {}", out_path.display()))?;
+            std::io::copy(&mut entry, &mut outfile)?;
+        }
+    }
+
+    Ok(())
 }

@@ -8,6 +8,7 @@
         "jre_url": null,
         "pcl2_url": "https://github.com/YOUR_GITHUB_USERNAME/upmc/releases/download/tools/PCL2.exe",
         "packwiz_bootstrap_url": null,
-        "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar"
+        "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar",
+        "settings_url": "https://github.com/YOUR_GITHUB_USERNAME/upmc/releases/download/tools/settings.zip"
     }
 }
