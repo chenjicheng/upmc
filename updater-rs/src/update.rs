@@ -139,6 +139,11 @@ pub fn run_update(
         on_progress(Progress::new(78, "版本已是最新"));
     }
 
+    // ── 确保原版 MC 客户端已下载（每次启动都检查） ──
+    // 这是一个幂等操作：如果文件已存在会立即跳过
+    on_progress(Progress::new(79, "检查原版 MC 客户端..."));
+    fabric::ensure_vanilla_client(base_dir, &remote.mc_version)?;
+
     // ─────────────────────────────────────────────
     // 阶段 3: 同步模组和配置
     // ─────────────────────────────────────────────

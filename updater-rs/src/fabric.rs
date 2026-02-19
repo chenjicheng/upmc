@@ -167,6 +167,13 @@ pub fn clean_mods_dir(base_dir: &Path) -> Result<()> {
 const VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 
+/// 确保原版 MC 客户端已下载（公开接口，供 update.rs 每次启动调用）。
+/// 如果文件已存在会立即返回。
+pub fn ensure_vanilla_client(base_dir: &Path, mc_version: &str) -> Result<()> {
+    let mc_dir = base_dir.join(config::MINECRAFT_DIR);
+    download_vanilla_version(&mc_dir, mc_version)
+}
+
 /// 下载原版 MC 客户端的 version JSON 和 client.jar。
 ///
 /// Fabric 安装器不下载原版客户端，只安装 loader。
