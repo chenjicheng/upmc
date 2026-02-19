@@ -47,7 +47,8 @@ pub const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
 /// 首次安装时自动生成的 Setup.ini
 ///
 /// 关键设置：
-///   - VersionArgumentIndie=2: 完全版本隔离
+///   - VersionArgumentIndie=1: 不隔离，使用 .minecraft/ 作为游戏目录
+///     （packwiz 把 mods/config 等安装到 .minecraft/，必须关闭隔离）
 ///   - HiddenPageDownload: 隐藏下载页，防止玩家误操作
 ///
 /// PCL2 会自动检测同目录下的 .minecraft 文件夹，
@@ -56,8 +57,8 @@ pub const PCL2_SETUP_INI: &str = "\
 ; ===== 服务器专属启动器 =====\r\n\
 Logo=我的服务器\r\n\
 LogoSub=专属启动器\r\n\
-; 版本完全隔离\r\n\
-VersionArgumentIndie=2\r\n\
+; 不隔离版本，使用 .minecraft 作为游戏目录\r\n\
+VersionArgumentIndie=1\r\n\
 ; 隐藏下载页面\r\n\
 HiddenPageDownload=True\r\n\
 ";
