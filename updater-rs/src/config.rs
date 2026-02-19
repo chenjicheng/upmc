@@ -21,7 +21,8 @@ pub const LOCAL_VERSION_FILE: &str = "updater/local.json";
 pub const PACKWIZ_BOOTSTRAP_JAR: &str = "updater/packwiz-installer-bootstrap.jar";
 pub const FABRIC_INSTALLER_JAR: &str = "updater/fabric-installer.jar";
 pub const MINECRAFT_DIR: &str = ".minecraft";
-pub const PCL2_EXE: &str = "PCL/Plain Craft Launcher 2.exe";
+pub const PCL2_EXE: &str = "Plain Craft Launcher 2.exe";
+pub const PCL2_SETUP_INI_PATH: &str = "Setup.ini";
 pub const LOCAL_JRE_JAVA: &str = "jre/bin/java.exe";
 
 // ── 安装目录 ──
@@ -46,18 +47,15 @@ pub const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
 /// 首次安装时自动生成的 Setup.ini
 ///
 /// 关键设置：
-///   - SystemLaunchFolder: 指向本地 .minecraft，避免使用 %AppData% 全局目录
-///   - LaunchArgumentJavaAll: 指定本地 JRE，不依赖系统 Java
 ///   - VersionArgumentIndie=2: 完全版本隔离
 ///   - HiddenPageDownload: 隐藏下载页，防止玩家误操作
+///
+/// PCL2 会自动检测同目录下的 .minecraft 文件夹，
+/// 无需手动指定游戏目录。
 pub const PCL2_SETUP_INI: &str = "\
 ; ===== 服务器专属启动器 =====\r\n\
 Logo=我的服务器\r\n\
 LogoSub=专属启动器\r\n\
-; 使用本地 .minecraft 而非全局 %AppData%\r\n\
-SystemLaunchFolder=../.minecraft\r\n\
-; 使用本地 JRE\r\n\
-LaunchArgumentJavaAll=../jre/bin/javaw.exe\r\n\
 ; 版本完全隔离\r\n\
 VersionArgumentIndie=2\r\n\
 ; 隐藏下载页面\r\n\

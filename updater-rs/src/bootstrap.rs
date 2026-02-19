@@ -51,7 +51,6 @@ pub fn run_bootstrap(
     // ── 创建目录结构 ──
     on_progress(Progress::new(2, "正在创建目录结构..."));
     let dirs = [
-        "PCL",
         ".minecraft",
         ".minecraft/mods",
         ".minecraft/config",
@@ -129,7 +128,7 @@ pub fn run_bootstrap(
     on_progress(Progress::new(46, "Fabric 安装器就绪"));
 
     // ── 生成 PCL2 Setup.ini ──
-    let setup_ini = base_dir.join("PCL/Setup.ini");
+    let setup_ini = base_dir.join(config::PCL2_SETUP_INI_PATH);
     if !setup_ini.exists() {
         on_progress(Progress::new(47, "正在配置启动器..."));
         fs::write(&setup_ini, config::PCL2_SETUP_INI)
