@@ -2,9 +2,10 @@
 // version.rs — 版本检查模块
 // ============================================================
 // 负责：
-//   1. 从远程 URL 拉取 server.json（包含最新 MC/Fabric 版本）
-//   2. 读取本地 local.json（记录当前已安装的版本）
-//   3. 对比两者，判断是否需要升级
+//   1. 从远程 URL 拉取 server.json（包含 pack_url 和下载配置）
+//   2. 从 pack.toml 解析 MC/Fabric 版本（单一数据源）
+//   3. 读取本地 local.json（记录当前已安装的版本）
+//   4. 对比两者，判断是否需要升级
 // ============================================================
 
 use anyhow::{Context, Result};
@@ -14,34 +15,35 @@ use std::path::Path;
 
 use crate::config;
 
-/// 服务器端的版本信息（从远程 server.json 反序列化）
+/// 服务器端配置（从远程 server.json 反序列化）
 ///
-/// 示例 JSON：
-/// ```json
-/// {
-///     "mc_version": "1.21.4",
-///     "fabric_version": "0.16.9",
-///     "version_tag": "fabric-loader-0.16.9-1.21.4",
-///     "pack_url": "https://xxx.github.io/upmc-dist/pack.toml"
-/// }
-/// ```
+/// 只包含 pack_url 和 downloads，版本信息从 pack.toml 读取。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerVersion {
-    /// Minecraft 版本号，如 "1.21.4"
-    pub mc_version: String,
-
-    /// Fabric Loader 版本号，如 "0.16.9"
-    pub fabric_version: String,
-
-    /// 版本文件夹名称，如 "fabric-loader-0.16.9-1.21.4"
-    /// 对应 .minecraft/versions/ 下的目录名
-    pub version_tag: String,
-
+pub struct ServerConfig {
     /// packwiz pack.toml 的远程 URL
     pub pack_url: String,
 
     /// 可选的下载 URL 配置（首次安装时自动下载组件）
     #[serde(default)]
+    pub downloads: Downloads,
+}
+
+/// 从 pack.toml 解析出的版本信息 + server.json 的配置合并后的完整远程状态
+#[derive(Debug, Clone)]
+pub struct RemoteVersion {
+    /// Minecraft 版本号，如 "1.21.11"
+    pub mc_version: String,
+
+    /// Fabric Loader 版本号，如 "0.18.4"
+    pub fabric_version: String,
+
+    /// 版本文件夹名称，如 "fabric-loader-0.18.4-1.21.11"
+    pub version_tag: String,
+
+    /// packwiz pack.toml 的远程 URL
+    pub pack_url: String,
+
+    /// 下载配置
     pub downloads: Downloads,
 }
 
@@ -89,15 +91,18 @@ pub struct LocalVersion {
     pub version_tag: String,
 }
 
-/// 从远程 URL 拉取 server.json 并解析。
+/// 从远程拉取 server.json 和 pack.toml，合并为完整的远程版本信息。
 ///
-/// 如果网络不可用或超时，返回 Err，调用方应跳过更新。
-pub fn fetch_remote_version() -> Result<ServerVersion> {
-    // 使用 ureq 发送 GET 请求，设置超时
+/// 流程：
+///   1. GET server.json → 获取 pack_url 和 downloads
+///   2. GET pack.toml   → 解析 minecraft 和 fabric 版本
+///   3. 合并为 RemoteVersion
+pub fn fetch_remote_version() -> Result<RemoteVersion> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(config::HTTP_TIMEOUT_SECS))
         .build();
 
+    // 1. 拉取 server.json
     let response = agent
         .get(config::REMOTE_SERVER_JSON_URL)
         .call()
@@ -107,10 +112,93 @@ pub fn fetch_remote_version() -> Result<ServerVersion> {
         .into_string()
         .context("读取服务器响应失败")?;
 
-    let version: ServerVersion =
+    let server_config: ServerConfig =
         serde_json::from_str(&body).context("解析 server.json 失败")?;
 
-    Ok(version)
+    // 2. 拉取 pack.toml 并解析版本
+    let pack_response = agent
+        .get(&server_config.pack_url)
+        .call()
+        .context("无法获取 pack.toml，请检查网络")?;
+
+    let pack_toml = pack_response
+        .into_string()
+        .context("读取 pack.toml 失败")?;
+
+    let (mc_version, fabric_version) = parse_pack_toml_versions(&pack_toml)
+        .context("从 pack.toml 解析版本信息失败")?;
+
+    // 3. 合并
+    let version_tag = format!("fabric-loader-{}-{}", fabric_version, mc_version);
+
+    Ok(RemoteVersion {
+        mc_version,
+        fabric_version,
+        version_tag,
+        pack_url: server_config.pack_url,
+        downloads: server_config.downloads,
+    })
+}
+
+/// 从 pack.toml 文本中解析 minecraft 和 fabric 版本。
+///
+/// pack.toml 格式示例：
+/// ```toml
+/// [versions]
+/// fabric = "0.18.4"
+/// minecraft = "1.21.11"
+/// ```
+///
+/// 使用简单字符串解析，不需要完整的 TOML 解析器。
+fn parse_pack_toml_versions(toml_text: &str) -> Result<(String, String)> {
+    let mut mc_version: Option<String> = None;
+    let mut fabric_version: Option<String> = None;
+    let mut in_versions_section = false;
+
+    for line in toml_text.lines() {
+        let trimmed = line.trim();
+
+        // 检测 [versions] 段
+        if trimmed == "[versions]" {
+            in_versions_section = true;
+            continue;
+        }
+
+        // 遇到新的段落 [xxx]，退出 versions 段
+        if trimmed.starts_with('[') && in_versions_section {
+            break;
+        }
+
+        if in_versions_section {
+            if let Some(value) = extract_toml_value(trimmed, "minecraft") {
+                mc_version = Some(value);
+            }
+            if let Some(value) = extract_toml_value(trimmed, "fabric") {
+                fabric_version = Some(value);
+            }
+        }
+    }
+
+    let mc = mc_version.context("pack.toml 中找不到 minecraft 版本")?;
+    let fabric = fabric_version.context("pack.toml 中找不到 fabric 版本")?;
+
+    Ok((mc, fabric))
+}
+
+/// 从 TOML 行中提取 `key = "value"` 形式的值
+fn extract_toml_value(line: &str, key: &str) -> Option<String> {
+    let line = line.trim();
+    if !line.starts_with(key) {
+        return None;
+    }
+    let rest = line[key.len()..].trim();
+    if !rest.starts_with('=') {
+        return None;
+    }
+    let value_part = rest[1..].trim();
+    // 去掉引号
+    let value = value_part.trim_matches('"').trim_matches('\'');
+    Some(value.to_string())
 }
 
 /// 读取本地 local.json。
@@ -145,6 +233,6 @@ pub fn save_local_version(base_dir: &Path, version: &LocalVersion) -> Result<()>
 /// 判断是否需要升级 Minecraft / Fabric 版本。
 ///
 /// 只要 mc_version 或 fabric_version 任意一个不同，就需要升级。
-pub fn needs_version_upgrade(remote: &ServerVersion, local: &LocalVersion) -> bool {
+pub fn needs_version_upgrade(remote: &RemoteVersion, local: &LocalVersion) -> bool {
     remote.mc_version != local.mc_version || remote.fabric_version != local.fabric_version
 }

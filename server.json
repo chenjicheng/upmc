@@ -1,14 +1,11 @@
 {
-    "mc_version": "1.21.4",
-    "fabric_version": "0.16.9",
-    "version_tag": "fabric-loader-0.16.9-1.21.4",
     "pack_url": "https://chenjicheng.github.io/upmc/pack.toml",
 
     "downloads": {
         "jre_url": "https://ghfast.top/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.6%2B7/OpenJDK21U-jre_x64_windows_hotspot_21.0.6_7.zip",
         "pcl2_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/PCL2.exe",
         "packwiz_bootstrap_url": "https://ghfast.top/github.com/packwiz/packwiz-installer-bootstrap/releases/latest/download/packwiz-installer-bootstrap.jar",
-        "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar",
+        "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.1.1/fabric-installer-1.1.1.jar",
         "settings_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/settings.zip"
     }
 }
