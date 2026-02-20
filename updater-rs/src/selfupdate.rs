@@ -132,7 +132,7 @@ pub fn check_and_update(
                 let mb_total = total_size as f64 / 1_048_576.0;
                 on_progress(crate::update::Progress::new(
                     pct.min(10),
-                    format!("下载更新器... {:.1}/{:.1} MB", mb_done, mb_total),
+                    format!("下载更新器... {mb_done:.1}/{mb_total:.1} MB"),
                 ));
             }
         }
@@ -145,10 +145,8 @@ pub fn check_and_update(
         let _ = fs::remove_file(&temp_path);
         anyhow::bail!(
             "更新器下载校验失败\n\
-             预期: {}\n\
-             实际: {}",
-            expected_hash,
-            new_hash
+             预期: {expected_hash}\n\
+             实际: {new_hash}"
         );
     }
 

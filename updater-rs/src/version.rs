@@ -139,7 +139,7 @@ pub fn fetch_remote_version() -> Result<RemoteVersion> {
         .context("从 pack.toml 解析版本信息失败")?;
 
     // 3. 合并
-    let version_tag = format!("fabric-loader-{}-{}", fabric_version, mc_version);
+    let version_tag = format!("fabric-loader-{fabric_version}-{mc_version}");
 
     Ok(RemoteVersion {
         mc_version,

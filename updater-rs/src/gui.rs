@@ -179,7 +179,7 @@ impl UpdaterApp {
                     s.finished = true;
                 }
                 Err(e) => {
-                    let err_msg = format!("{:#}", e);
+                    let err_msg = format!("{e:#}");
                     s.log.push(format!("[错误] {}", &err_msg));
                     s.error = Some(err_msg);
                     s.finished = true;
@@ -204,7 +204,7 @@ impl UpdaterApp {
             if let Some(ref error) = state.error {
                 // 出错了：显示错误摘要
                 self.status_label
-                    .set_text(&format!("更新失败: {}", error));
+                    .set_text(&format!("更新失败: {error}"));
                 self.hint_label.set_text("请截图联系管理员");
                 self.progress_bar.set_pos(0);
 
@@ -241,7 +241,7 @@ impl UpdaterApp {
                 nwg::modal_info_message(
                     &self.window,
                     "错误",
-                    &format!("启动器启动失败: {}", e),
+                    &format!("启动器启动失败: {e}"),
                 );
             }
         } else {

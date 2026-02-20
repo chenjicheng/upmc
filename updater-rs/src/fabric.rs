@@ -121,7 +121,7 @@ pub fn cleanup_old_versions(base_dir: &Path, keep_tag: &str) -> Result<()> {
         // 保留新版本的目录，删除其他
         if dir_name != keep_tag {
             fs::remove_dir_all(&path)
-                .with_context(|| format!("删除旧版本目录失败: {}", dir_name))?;
+                .with_context(|| format!("删除旧版本目录失败: {dir_name}"))?;
         }
     }
 
@@ -234,8 +234,8 @@ pub fn fix_version_isolation(base_dir: &Path, version_tag: &str) -> Result<()> {
 ///   5. 下载 client.jar → versions/<ver>/<ver>.jar
 fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
     let ver_dir = mc_dir.join("versions").join(mc_version);
-    let ver_json_path = ver_dir.join(format!("{}.json", mc_version));
-    let ver_jar_path = ver_dir.join(format!("{}.jar", mc_version));
+    let ver_json_path = ver_dir.join(format!("{mc_version}.json"));
+    let ver_jar_path = ver_dir.join(format!("{mc_version}.jar"));
 
     // 如果已经存在就跳过
     if ver_json_path.exists() && ver_jar_path.exists() {
@@ -269,7 +269,7 @@ fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
         .iter()
         .find(|v| v["id"].as_str() == Some(mc_version))
         .and_then(|v| v["url"].as_str())
-        .with_context(|| format!("在 Mojang 清单中找不到版本 {}", mc_version))?
+        .with_context(|| format!("在 Mojang 清单中找不到版本 {mc_version}"))?
         .to_string();
 
     // 3. 下载 version JSON
@@ -277,7 +277,7 @@ fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
         let ver_json_str = agent
             .get(&version_url)
             .call()
-            .with_context(|| format!("下载 MC {} version JSON 失败", mc_version))?
+            .with_context(|| format!("下载 MC {mc_version} version JSON 失败"))?
             .into_string()
             .context("读取 version JSON 失败")?;
 
@@ -300,7 +300,7 @@ fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
         let response = agent
             .get(client_url)
             .call()
-            .with_context(|| format!("下载 MC {} 客户端 jar 失败", mc_version))?;
+            .with_context(|| format!("下载 MC {mc_version} 客户端 jar 失败"))?;
 
         let mut reader = response.into_reader();
         let mut file = fs::File::create(&ver_jar_path)

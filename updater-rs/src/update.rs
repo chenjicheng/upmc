@@ -73,7 +73,7 @@ pub fn run_update(
             // 网络失败：检查是否已安装过
             if bootstrap::is_bootstrapped(base_dir) {
                 // 已安装 → 离线模式，跳过更新直接启动
-                eprintln!("网络检查失败，进入离线模式: {:#}", e);
+                eprintln!("网络检查失败，进入离线模式: {e:#}");
                 on_progress(Progress::new(100, "离线模式 — 跳过更新"));
                 return Ok(UpdateResult::Offline);
             } else {
@@ -81,8 +81,7 @@ pub fn run_update(
                 bail!(
                     "首次运行需要网络连接来下载必要组件。\n\
                      请检查网络后重试。\n\n\
-                     错误详情: {:#}",
-                    e
+                     错误详情: {e:#}"
                 );
             }
         }
@@ -105,7 +104,7 @@ pub fn run_update(
         }
         Err(e) => {
             // 自更新失败不阻塞，记录日志继续
-            eprintln!("自更新检查失败（不影响正常使用）: {:#}", e);
+            eprintln!("自更新检查失败（不影响正常使用）: {e:#}");
         }
     }
 

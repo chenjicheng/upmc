@@ -58,7 +58,7 @@ pub fn run_bootstrap(
     ];
     for dir in &dirs {
         fs::create_dir_all(base_dir.join(dir))
-            .with_context(|| format!("创建目录失败: {}", dir))?;
+            .with_context(|| format!("创建目录失败: {dir}"))?;
     }
 
     // ── 下载 JRE（如果不存在） ──
@@ -189,7 +189,7 @@ fn download_file(
     let response = agent
         .get(url)
         .call()
-        .with_context(|| format!("下载失败: {}", url))?;
+        .with_context(|| format!("下载失败: {url}"))?;
 
     // 尝试获取文件大小（用于进度百分比）
     let total_size = response
@@ -221,7 +221,7 @@ fn download_file(
             let mb_total = total_size as f64 / 1_048_576.0;
             on_progress(Progress::new(
                 pct.min(progress_end),
-                format!("下载中... {:.1}/{:.1} MB", mb_done, mb_total),
+                format!("下载中... {mb_done:.1}/{mb_total:.1} MB"),
             ));
         }
     }
@@ -250,7 +250,7 @@ fn extract_zip_strip_toplevel(zip_path: &Path, dest: &Path) -> Result<()> {
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
-            .with_context(|| format!("读取 ZIP 条目 #{} 失败", i))?;
+            .with_context(|| format!("读取 ZIP 条目 #{i} 失败"))?;
 
         let full_name = entry.name().to_string();
 
@@ -273,7 +273,7 @@ fn extract_zip_strip_toplevel(zip_path: &Path, dest: &Path) -> Result<()> {
 
         // 安全检查：防止 ZIP 路径遍历攻击（如 "../../../etc/passwd"）
         if !out_path.starts_with(dest) {
-            bail!("ZIP 条目包含非法路径: {}", full_name);
+            bail!("ZIP 条目包含非法路径: {full_name}");
         }
 
         if entry.is_dir() {
@@ -312,7 +312,7 @@ fn detect_common_prefix(archive: &mut zip::ZipArchive<fs::File>) -> Option<Strin
         return None;
     }
 
-    let prefix = format!("{}/", candidate);
+    let prefix = format!("{candidate}/");
 
     // 检查所有条目是否都以这个前缀开头
     for i in 1..archive.len() {
@@ -346,7 +346,7 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
-            .with_context(|| format!("读取设置包条目 #{} 失败", i))?;
+            .with_context(|| format!("读取设置包条目 #{i} 失败"))?;
 
         let name = entry.name().to_string();
         if name.is_empty() {
@@ -357,7 +357,7 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
 
         // 安全检查：防止 ZIP 路径遍历攻击
         if !out_path.starts_with(dest) {
-            bail!("设置包 ZIP 条目包含非法路径: {}", name);
+            bail!("设置包 ZIP 条目包含非法路径: {name}");
         }
 
         if entry.is_dir() {
