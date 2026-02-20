@@ -291,7 +291,7 @@ fn extract_zip_strip_toplevel(zip_path: &Path, dest: &Path) -> Result<()> {
 /// 如果是（例如所有文件都在 `jdk-21.0.5+11-jre/` 下），
 /// 返回该前缀（含尾部 `/`）。否则返回 None。
 fn detect_common_prefix(archive: &mut zip::ZipArchive<fs::File>) -> Option<String> {
-    if archive.len() == 0 {
+    if archive.is_empty() {
         return None;
     }
 
@@ -299,8 +299,7 @@ fn detect_common_prefix(archive: &mut zip::ZipArchive<fs::File>) -> Option<Strin
     let candidate = {
         let first = archive.by_index(0).ok()?;
         let first_name = first.name().to_string();
-        let c = first_name.split('/').next()?.to_string();
-        c
+        first_name.split('/').next()?.to_string()
         // first 在这里被 drop，释放对 archive 的借用
     };
 

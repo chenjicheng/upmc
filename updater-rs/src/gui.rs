@@ -37,6 +37,8 @@ struct SharedState {
     error: Option<String>,
     /// 完整日志记录，每一步都追加
     log: Vec<String>,
+    /// 仅退出，不启动 PCL2（自更新重启时使用）
+    exit_only: bool,
 }
 
 /// GUI 窗口定义
@@ -62,7 +64,6 @@ pub struct UpdaterApp {
         position: (20, 15),
         flags: "VISIBLE"
     )]
-    #[nwg_layout_item(layout: layout, col: 0, row: 0)]
     title_label: nwg::Label,
 
     // ── 状态文本 ──
@@ -133,6 +134,7 @@ impl UpdaterApp {
                 finished: false,
                 error: None,
                 log: Vec::new(),
+                exit_only: false,
             })),
             base_dir: RefCell::new(base_dir),
             ..Default::default()
@@ -165,6 +167,16 @@ impl UpdaterApp {
             // 更新完成，标记状态
             let mut s = state.lock().unwrap();
             match result {
+                Ok(UpdateResult::SelfUpdateRestarting) => {
+                    // 更新器已自更新并重启新进程，当前进程直接退出
+                    s.log.push("[重启] 更新器已更新，正在重启...".to_string());
+                    s.finished = true;
+                    // 不设置 error，后续 GUI 判定为成功，
+                    // 但通过 exit_only 标记避免启动 PCL2
+                    s.exit_only = true;
+                    notice_sender.notice();
+                    return;
+                }
                 Ok(UpdateResult::Success) | Ok(UpdateResult::Offline) => {
                     s.log.push("[完成] 更新成功".to_string());
                     s.finished = true;
@@ -203,6 +215,10 @@ impl UpdaterApp {
                 let log_text = state.log.join("\r\n");
                 drop(state); // 释放锁再弹窗（弹窗会阻塞）
                 show_error_log_dialog(&self.window, &log_text);
+            } else if state.exit_only {
+                // 自更新重启：直接关闭窗口，不启动 PCL2
+                drop(state);
+                nwg::stop_thread_dispatch();
             } else {
                 // 成功：启动延迟定时器，1.5秒后打开 PCL2
                 self.hint_label.set_text("即将启动游戏...");
@@ -321,8 +337,8 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
             nwg::Event::OnButtonClick => {
                 if handle == copy_btn_handle {
                     // 复制到剪贴板
-                    nwg::Clipboard::set_data_text(&window_handle_clone, &log_for_copy);
-                    let _ = nwg::modal_info_message(&window_handle_clone, "提示", "日志已复制到剪贴板");
+                    nwg::Clipboard::set_data_text(window_handle_clone, &log_for_copy);
+                    let _ = nwg::modal_info_message(window_handle_clone, "提示", "日志已复制到剪贴板");
                 } else if handle == close_btn_handle {
                     nwg::stop_thread_dispatch();
                 }

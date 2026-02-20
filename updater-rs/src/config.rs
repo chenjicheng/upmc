@@ -92,14 +92,14 @@ pub fn find_java(base_dir: &Path) -> Result<PathBuf> {
 
     // 3. PATH（使用 where 命令查找）
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    if let Ok(output) = Command::new("where").arg("java").creation_flags(CREATE_NO_WINDOW).output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(first_line) = stdout.lines().next() {
-                let p = PathBuf::from(first_line.trim());
-                if p.exists() {
-                    return Ok(p);
-                }
+    if let Ok(output) = Command::new("where").arg("java").creation_flags(CREATE_NO_WINDOW).output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(first_line) = stdout.lines().next() {
+            let p = PathBuf::from(first_line.trim());
+            if p.exists() {
+                return Ok(p);
             }
         }
     }

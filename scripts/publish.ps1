@@ -72,7 +72,7 @@ try {
 
     Write-Host ""
     Write-Host "[完成] 已推送到 main，GitHub Actions 将自动部署到 Pages。" -ForegroundColor Green
-    Write-Host "部署状态: https://github.com/YOUR_USERNAME/upmc/actions" -ForegroundColor Gray
+    Write-Host "部署状态: https://github.com/chenjicheng/upmc/actions" -ForegroundColor Gray
 }
 finally {
     Pop-Location

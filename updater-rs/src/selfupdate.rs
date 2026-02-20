@@ -207,9 +207,9 @@ pub fn check_and_update(
     updater_sha256: Option<&str>,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
-    // 如果没有配置自更新 URL 或哈希，跳过
+    // 如果没有配置自更新 URL 或哈希，或哈希为空字符串，跳过
     let (url, expected_hash) = match (updater_url, updater_sha256) {
-        (Some(u), Some(h)) => (u, h),
+        (Some(u), Some(h)) if !u.is_empty() && !h.is_empty() => (u, h),
         _ => return Ok(SelfUpdateResult::UpToDate),
     };
 

@@ -151,13 +151,11 @@ pub fn clean_mods_dir(base_dir: &Path) -> Result<()> {
         let path = entry.path();
 
         // 只删除 .jar 文件
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "jar" {
-                    fs::remove_file(&path)
-                        .with_context(|| format!("删除模组失败: {}", path.display()))?;
-                }
-            }
+        if path.is_file()
+            && path.extension().is_some_and(|ext| ext == "jar")
+        {
+            fs::remove_file(&path)
+                .with_context(|| format!("删除模组失败: {}", path.display()))?;
         }
     }
 

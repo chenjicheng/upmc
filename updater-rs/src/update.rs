@@ -43,6 +43,8 @@ pub enum UpdateResult {
     Success,
     /// 网络不可用，跳过更新（离线模式）
     Offline,
+    /// 更新器自身已更新并重启，当前进程应直接退出（不启动 PCL2）
+    SelfUpdateRestarting,
 }
 
 /// 执行完整的更新流程。
@@ -95,8 +97,8 @@ pub fn run_update(
         on_progress,
     ) {
         Ok(selfupdate::SelfUpdateResult::Restarting) => {
-            // 新版已下载并启动，当前进程应退出
-            return Ok(UpdateResult::Success);
+            // 新版已下载并启动，当前进程应直接退出（不启动 PCL2）
+            return Ok(UpdateResult::SelfUpdateRestarting);
         }
         Ok(selfupdate::SelfUpdateResult::UpToDate) => {
             // 不需要更新，继续

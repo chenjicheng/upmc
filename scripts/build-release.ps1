@@ -23,7 +23,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # ── 编译 Release ──
-Write-Host "[1/2] 编译 Release..." -ForegroundColor Yellow
+Write-Host "[1/3] 编译 Release..." -ForegroundColor Yellow
 
 Push-Location $UpdaterDir
 try {
