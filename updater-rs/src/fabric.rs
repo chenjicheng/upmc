@@ -17,9 +17,6 @@ use std::time::Duration;
 
 use crate::config;
 
-/// Windows: 不创建控制台窗口
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 /// 调用 Fabric Installer CLI 安装指定版本的 MC + Fabric Loader。
 ///
 /// 等效于命令：
@@ -72,7 +69,7 @@ pub fn install_fabric(
         .arg("-loader")
         .arg(fabric_version)
         .arg("-noprofile")
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(config::CREATE_NO_WINDOW)
         .output()
         .context("启动 Fabric 安装器失败")?;
 

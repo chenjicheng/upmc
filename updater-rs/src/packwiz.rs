@@ -18,9 +18,6 @@ use std::process::Command;
 
 use crate::config;
 
-/// Windows: 不创建控制台窗口
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 /// 调用 packwiz-installer-bootstrap 同步模组和配置。
 ///
 /// 等效于命令：
@@ -60,7 +57,7 @@ pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
         .arg("client") // 客户端模式
         .arg(pack_url) // 远程 pack.toml URL
         .current_dir(&mc_dir) // 工作目录 = .minecraft
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(config::CREATE_NO_WINDOW)
         .output()
         .context("启动 packwiz-installer 失败")?;
 

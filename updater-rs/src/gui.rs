@@ -25,9 +25,6 @@ use std::thread;
 use crate::config;
 use crate::update::{self, Progress, UpdateResult};
 
-/// Windows: 不创建控制台窗口
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 /// 共享的进度状态，后台线程写入，GUI 线程读取。
 /// 用 Arc<Mutex<>> 实现线程安全。
 #[derive(Debug, Clone, Default)]
@@ -238,7 +235,7 @@ impl UpdaterApp {
             // 启动 PCL2（不等待它退出）
             let _ = std::process::Command::new(&pcl2_path)
                 .current_dir(pcl2_path.parent().unwrap_or(&base_dir))
-                .creation_flags(CREATE_NO_WINDOW)
+                .creation_flags(config::CREATE_NO_WINDOW)
                 .spawn();
         } else {
             nwg::modal_info_message(

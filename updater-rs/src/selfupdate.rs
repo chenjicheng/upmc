@@ -177,10 +177,9 @@ pub fn check_and_update(
 
     // 启动新版 exe
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     std::process::Command::new(&exe_path)
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(config::CREATE_NO_WINDOW)
         .spawn()
         .context("启动新版更新器失败")?;
 

@@ -36,6 +36,11 @@ pub const INSTALL_DIR: &str = "CJC整合包";
 
 pub const WINDOW_TITLE: &str = "我的服务器 - 更新器";
 
+// ── Windows 进程创建标志 ──
+
+/// 创建子进程时不弹出控制台窗口
+pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 // ── 超时 ──
 
 /// 小文件请求超时（server.json 等）
@@ -91,7 +96,6 @@ pub fn find_java(base_dir: &Path) -> Result<PathBuf> {
     }
 
     // 3. PATH（使用 where 命令查找）
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
     if let Ok(output) = Command::new("where").arg("java").creation_flags(CREATE_NO_WINDOW).output()
         && output.status.success()
     {
