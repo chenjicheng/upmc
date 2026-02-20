@@ -142,9 +142,6 @@ pub fn run_update(
         on_progress(Progress::new(60, "正在安装 Fabric..."));
         fabric::install_fabric(base_dir, &remote.mc_version, &remote.fabric_version)?;
 
-        // 2a+. 立即修正版本隔离（在 PCL2 检测到版本之前先创建正确设置）
-        fabric::fix_version_isolation(base_dir, &remote.version_tag)?;
-
         // 2b. 清理旧版本目录
         on_progress(Progress::new(70, "正在清理旧版本..."));
         fabric::cleanup_old_versions(base_dir, &remote.version_tag)?;
