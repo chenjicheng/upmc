@@ -59,21 +59,17 @@ $hash = (Get-FileHash $OutputExe -Algorithm SHA256).Hash.ToLower()
 
 $ServerJson = Join-Path $RepoRoot "server.json"
 if (Test-Path $ServerJson) {
-    $json = Get-Content $ServerJson -Raw | ConvertFrom-Json
+    # 使用正则替换，避免 ConvertFrom-Json/ConvertTo-Json 破坏格式和中文
+    $content = [System.IO.File]::ReadAllText($ServerJson, [System.Text.Encoding]::UTF8)
 
-    # 确保 downloads 对象存在
-    if (-not $json.downloads) {
-        $json | Add-Member -NotePropertyName "downloads" -NotePropertyValue ([PSCustomObject]@{})
-    }
-
-    # 更新或添加 updater_sha256
-    if ($json.downloads.PSObject.Properties["updater_sha256"]) {
-        $json.downloads.updater_sha256 = $hash
+    if ($content -match '"updater_sha256"\s*:\s*"[^"]*"') {
+        $content = $content -replace '"updater_sha256"\s*:\s*"[^"]*"', "`"updater_sha256`": `"$hash`""
     } else {
-        $json.downloads | Add-Member -NotePropertyName "updater_sha256" -NotePropertyValue $hash
+        Write-Host "  [警告] server.json 中找不到 updater_sha256 字段，请手动添加" -ForegroundColor Yellow
     }
 
-    $json | ConvertTo-Json -Depth 10 | Set-Content $ServerJson -Encoding UTF8
+    # 写入时不添加 BOM
+    [System.IO.File]::WriteAllText($ServerJson, $content, (New-Object System.Text.UTF8Encoding $false))
     Write-Host "  SHA256: $hash" -ForegroundColor Gray
     Write-Host "  server.json 已更新" -ForegroundColor Green
 } else {
