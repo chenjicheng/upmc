@@ -18,6 +18,10 @@ serde_json = "1"
 # 错误处理: 简化 Result 链
 anyhow = "1"
 
+# SHA256 哈希计算
+sha2 = "0.10"
+hex = "0.4"
+
 # ZIP 解压: 用于解压下载的 JRE
 zip = "2"
 
