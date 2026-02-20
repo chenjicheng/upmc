@@ -1,0 +1,6 @@
+# packwiz 生成的文件保持 LF
+packwiz/**/*.toml text eol=lf
+packwiz/*.toml text eol=lf
+
+# PowerShell 脚本保持 CRLF
+*.ps1 text eol=crlf
