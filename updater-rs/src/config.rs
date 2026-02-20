@@ -14,7 +14,7 @@ use std::process::Command;
 
 /// 远程 server.json 的 URL（GitHub Pages 托管）
 pub const REMOTE_SERVER_JSON_URL: &str =
-    "https://chenjicheng.github.io/upmc/server.json";
+    "https://update.mc.chenjicheng.cn/upmc/server.json";
 
 // ── 本地路径（相对于 exe 所在目录） ──
 
