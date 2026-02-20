@@ -233,10 +233,17 @@ impl UpdaterApp {
 
         if pcl2_path.exists() {
             // 启动 PCL2（不等待它退出）
-            let _ = std::process::Command::new(&pcl2_path)
+            if let Err(e) = std::process::Command::new(&pcl2_path)
                 .current_dir(pcl2_path.parent().unwrap_or(&base_dir))
                 .creation_flags(config::CREATE_NO_WINDOW)
-                .spawn();
+                .spawn()
+            {
+                nwg::modal_info_message(
+                    &self.window,
+                    "错误",
+                    &format!("启动器启动失败: {}", e),
+                );
+            }
         } else {
             nwg::modal_info_message(
                 &self.window,
