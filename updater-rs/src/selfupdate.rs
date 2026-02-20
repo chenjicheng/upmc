@@ -85,7 +85,7 @@ pub fn check_and_update(
     // 计算当前 exe 的哈希
     let current_hash = sha256_file(&exe_path)?;
 
-    if current_hash == expected_hash {
+    if current_hash.eq_ignore_ascii_case(expected_hash) {
         return Ok(SelfUpdateResult::UpToDate);
     }
 
@@ -141,7 +141,7 @@ pub fn check_and_update(
 
     // 验证下载的文件哈希
     let new_hash = sha256_file(&temp_path)?;
-    if new_hash != expected_hash {
+    if !new_hash.eq_ignore_ascii_case(expected_hash) {
         let _ = fs::remove_file(&temp_path);
         anyhow::bail!(
             "更新器下载校验失败\n\
