@@ -16,6 +16,7 @@ mod config;
 mod fabric;
 mod gui;
 mod packwiz;
+mod selfupdate;
 mod update;
 mod version;
 
@@ -23,6 +24,9 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    // 清理上次自更新残留的 .old 文件
+    selfupdate::cleanup_old_exe();
+
     // 获取 exe 所在的目录作为基准路径
     // 所有相对路径（.minecraft、jre、PCL 等）都相对于这个目录
     let base_dir = get_base_dir();

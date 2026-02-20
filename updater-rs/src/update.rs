@@ -16,6 +16,7 @@ use std::path::Path;
 use crate::bootstrap;
 use crate::fabric;
 use crate::packwiz;
+use crate::selfupdate;
 use crate::version;
 
 /// 更新进度信息，传给 GUI 显示。
@@ -84,6 +85,27 @@ pub fn run_update(
             }
         }
     };
+
+    // ─────────────────────────────────────────────
+    // 阶段 -1: 检查更新器自身是否需要更新
+    // ─────────────────────────────────────────────
+    match selfupdate::check_and_update(
+        remote.downloads.updater_url.as_deref(),
+        remote.downloads.updater_sha256.as_deref(),
+        on_progress,
+    ) {
+        Ok(selfupdate::SelfUpdateResult::Restarting) => {
+            // 新版已下载并启动，当前进程应退出
+            return Ok(UpdateResult::Success);
+        }
+        Ok(selfupdate::SelfUpdateResult::UpToDate) => {
+            // 不需要更新，继续
+        }
+        Err(e) => {
+            // 自更新失败不阻塞，记录日志继续
+            eprintln!("自更新检查失败（不影响正常使用）: {:#}", e);
+        }
+    }
 
     // ─────────────────────────────────────────────
     // 阶段 0: 首次安装自举（如果需要）

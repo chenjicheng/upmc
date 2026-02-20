@@ -80,6 +80,16 @@ pub struct Downloads {
     ///   shaderpacks/         ← 光影预设
     #[serde(default)]
     pub settings_url: Option<String>,
+
+    /// 更新器自身的下载地址（.exe）
+    /// 配合 updater_sha256 实现自动更新更新器本体
+    #[serde(default)]
+    pub updater_url: Option<String>,
+
+    /// 更新器 exe 的 SHA256 哈希值（小写十六进制）
+    /// 与当前 exe 的哈希对比，不同则触发自更新
+    #[serde(default)]
+    pub updater_sha256: Option<String>,
 }
 
 /// 本地已安装的版本信息（保存在 local.json）
