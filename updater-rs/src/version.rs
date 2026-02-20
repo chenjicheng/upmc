@@ -206,8 +206,25 @@ fn extract_toml_value(line: &str, key: &str) -> Option<String> {
         return None;
     }
     let value_part = rest[1..].trim();
-    // 去掉引号
-    let value = value_part.trim_matches('"').trim_matches('\'');
+
+    // 处理带引号的字符串值：提取第一对引号之间的内容
+    // 这样可以正确忽略行内注释，如 key = "value" # comment
+    if let Some(stripped) = value_part.strip_prefix('"') {
+        // 找到闭合引号
+        let end = stripped.find('"').unwrap_or(stripped.len());
+        return Some(stripped[..end].to_string());
+    }
+    if let Some(stripped) = value_part.strip_prefix('\'') {
+        let end = stripped.find('\'').unwrap_or(stripped.len());
+        return Some(stripped[..end].to_string());
+    }
+
+    // 无引号的值：截断行内注释
+    let value = if let Some(hash_pos) = value_part.find('#') {
+        value_part[..hash_pos].trim()
+    } else {
+        value_part
+    };
     Some(value.to_string())
 }
 
