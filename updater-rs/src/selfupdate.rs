@@ -14,6 +14,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::Read;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -174,8 +175,6 @@ pub fn check_and_update(
     on_progress(crate::update::Progress::new(11, "更新器已更新，正在重启..."));
 
     // 启动新版 exe
-    use std::os::windows::process::CommandExt;
-
     std::process::Command::new(&exe_path)
         .creation_flags(config::CREATE_NO_WINDOW)
         .spawn()

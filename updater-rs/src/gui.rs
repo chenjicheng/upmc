@@ -174,7 +174,7 @@ impl UpdaterApp {
                     notice_sender.notice();
                     return;
                 }
-                Ok(UpdateResult::Success) | Ok(UpdateResult::Offline) => {
+                Ok(UpdateResult::Success | UpdateResult::Offline) => {
                     s.log.push("[完成] 更新成功".to_string());
                     s.finished = true;
                 }

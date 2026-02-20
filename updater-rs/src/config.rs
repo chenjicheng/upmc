@@ -39,7 +39,7 @@ pub const WINDOW_TITLE: &str = "我的服务器 - 更新器";
 // ── Windows 进程创建标志 ──
 
 /// 创建子进程时不弹出控制台窗口
-pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 // ── 超时 ──
 
