@@ -6,6 +6,7 @@
 // ============================================================
 
 use anyhow::{bail, Result};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -90,7 +91,8 @@ pub fn find_java(base_dir: &Path) -> Result<PathBuf> {
     }
 
     // 3. PATH（使用 where 命令查找）
-    if let Ok(output) = Command::new("where").arg("java").output() {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    if let Ok(output) = Command::new("where").arg("java").creation_flags(CREATE_NO_WINDOW).output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Some(first_line) = stdout.lines().next() {

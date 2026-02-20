@@ -10,11 +10,15 @@
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::{Read, Write};
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
 use crate::config;
+
+/// Windows: 不创建控制台窗口
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// 调用 Fabric Installer CLI 安装指定版本的 MC + Fabric Loader。
 ///
@@ -68,6 +72,7 @@ pub fn install_fabric(
         .arg("-loader")
         .arg(fabric_version)
         .arg("-noprofile")
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .context("启动 Fabric 安装器失败")?;
 
