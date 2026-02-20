@@ -174,6 +174,53 @@ pub fn ensure_vanilla_client(base_dir: &Path, mc_version: &str) -> Result<()> {
     download_vanilla_version(&mc_dir, mc_version)
 }
 
+/// 修正 PCL2 的版本级别隔离设置。
+///
+/// PCL2 在首次检测到 Fabric 版本时会在
+/// `versions/<version_tag>/PCL/Setup.ini` 中写入 `VersionArgumentIndieV2:True`，
+/// 这会导致游戏目录被隔离到该版本文件夹下，而 packwiz 安装模组到 `.minecraft/mods/`，
+/// 两者不一致导致游戏无法加载模组。
+///
+/// 本函数每次启动时调用，确保 `VersionArgumentIndieV2` 为 `False`。
+pub fn fix_version_isolation(base_dir: &Path, version_tag: &str) -> Result<()> {
+    let mc_dir = base_dir.join(config::MINECRAFT_DIR);
+    let pcl_dir = mc_dir.join("versions").join(version_tag).join("PCL");
+    let setup_ini = pcl_dir.join("Setup.ini");
+
+    if setup_ini.exists() {
+        // 读取现有文件并替换隔离设置
+        let content = fs::read_to_string(&setup_ini)
+            .context("读取版本级 Setup.ini 失败")?;
+
+        if content.contains("VersionArgumentIndieV2:True") {
+            let new_content = content.replace(
+                "VersionArgumentIndieV2:True",
+                "VersionArgumentIndieV2:False",
+            );
+            fs::write(&setup_ini, &new_content)
+                .context("写入版本级 Setup.ini 失败")?;
+        } else if !content.contains("VersionArgumentIndieV2:") {
+            // 文件存在但没有这个 key，追加
+            let mut new_content = content;
+            if !new_content.ends_with('\n') {
+                new_content.push('\n');
+            }
+            new_content.push_str("VersionArgumentIndieV2:False\n");
+            fs::write(&setup_ini, &new_content)
+                .context("写入版本级 Setup.ini 失败")?;
+        }
+        // 如果已经是 False 就不用改
+    } else {
+        // 文件还不存在（Fabric 安装后但 PCL2 还没运行过），提前创建
+        fs::create_dir_all(&pcl_dir)
+            .context("创建版本级 PCL 目录失败")?;
+        fs::write(&setup_ini, "VersionArgumentIndieV2:False\n")
+            .context("写入版本级 Setup.ini 失败")?;
+    }
+
+    Ok(())
+}
+
 /// 下载原版 MC 客户端的 version JSON 和 client.jar。
 ///
 /// Fabric 安装器不下载原版客户端，只安装 loader。

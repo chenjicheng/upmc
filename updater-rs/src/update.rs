@@ -118,6 +118,9 @@ pub fn run_update(
         on_progress(Progress::new(60, "正在安装 Fabric..."));
         fabric::install_fabric(base_dir, &remote.mc_version, &remote.fabric_version)?;
 
+        // 2a+. 立即修正版本隔离（在 PCL2 检测到版本之前先创建正确设置）
+        fabric::fix_version_isolation(base_dir, &remote.version_tag)?;
+
         // 2b. 清理旧版本目录
         on_progress(Progress::new(70, "正在清理旧版本..."));
         fabric::cleanup_old_versions(base_dir, &remote.version_tag)?;
@@ -143,6 +146,13 @@ pub fn run_update(
     // 这是一个幂等操作：如果文件已存在会立即跳过
     on_progress(Progress::new(79, "检查原版 MC 客户端..."));
     fabric::ensure_vanilla_client(base_dir, &remote.mc_version)?;
+
+    // ── 修正 PCL2 版本隔离设置 ──
+    // PCL2 会在版本目录下自动创建 Setup.ini 并启用隔离，
+    // 导致游戏目录指向 versions/<tag>/ 而非 .minecraft/，
+    // 每次启动前都需要修正为不隔离。
+    on_progress(Progress::new(79, "修正版本隔离设置..."));
+    fabric::fix_version_isolation(base_dir, &remote.version_tag)?;
 
     // ─────────────────────────────────────────────
     // 阶段 3: 同步模组和配置

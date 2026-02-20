@@ -61,6 +61,9 @@ LogoSub=专属启动器\r\n\
 VersionArgumentIndie=1\r\n\
 ; 隐藏下载页面\r\n\
 HiddenPageDownload=True\r\n\
+; 默认游戏窗口大小 720p\r\n\
+LaunchArgumentWindowWidth=1280\r\n\
+LaunchArgumentWindowHeight=720\r\n\
 ";
 
 // ── Java 查找 ──
