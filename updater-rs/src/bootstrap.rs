@@ -271,6 +271,11 @@ fn extract_zip_strip_toplevel(zip_path: &Path, dest: &Path) -> Result<()> {
 
         let out_path = dest.join(relative);
 
+        // 安全检查：防止 ZIP 路径遍历攻击（如 "../../../etc/passwd"）
+        if !out_path.starts_with(dest) {
+            bail!("ZIP 条目包含非法路径: {}", full_name);
+        }
+
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
         } else {
@@ -349,6 +354,11 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
         }
 
         let out_path = dest.join(&name);
+
+        // 安全检查：防止 ZIP 路径遍历攻击
+        if !out_path.starts_with(dest) {
+            bail!("设置包 ZIP 条目包含非法路径: {}", name);
+        }
 
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
