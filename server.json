@@ -1,4 +1,4 @@
-﻿{
+{
     "pack_url": "https://chenjicheng.github.io/upmc/pack.toml",
 
     "downloads": {
@@ -7,7 +7,7 @@
         "packwiz_bootstrap_url": "https://ghfast.top/github.com/packwiz/packwiz-installer-bootstrap/releases/latest/download/packwiz-installer-bootstrap.jar",
         "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.1.1/fabric-installer-1.1.1.jar",
         "settings_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/settings.zip",
-        "updater_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/updater/updater.exe",
-        "updater_sha256": ""
+        "updater_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/updater.exe",
+        "updater_sha256": "9a94103d1baa40b769093c9a04fee9e2906ca6f842be82381fad0ec4774e3bb8"
     }
 }
