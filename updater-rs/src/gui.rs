@@ -45,7 +45,7 @@ pub struct UpdaterApp {
     // ── 窗口 ──
     #[nwg_control(
         title: "",       // 运行时设置
-        size: (420, 200),
+        size: (420, 165),
         position: (300, 300),
         flags: "WINDOW|VISIBLE",
         // 居中显示
@@ -54,20 +54,11 @@ pub struct UpdaterApp {
     #[nwg_events(OnWindowClose: [UpdaterApp::on_close])]
     window: nwg::Window,
 
-    // ── 标题标签 ──
-    #[nwg_control(
-        text: "",
-        size: (380, 30),
-        position: (20, 15),
-        flags: "VISIBLE"
-    )]
-    title_label: nwg::Label,
-
     // ── 状态文本 ──
     #[nwg_control(
         text: "正在初始化...",
         size: (380, 25),
-        position: (20, 60),
+        position: (20, 20),
         flags: "VISIBLE"
     )]
     status_label: nwg::Label,
@@ -75,7 +66,7 @@ pub struct UpdaterApp {
     // ── 进度条 ──
     #[nwg_control(
         size: (380, 25),
-        position: (20, 95),
+        position: (20, 55),
         range: 0..100,
         pos: 0
     )]
@@ -85,7 +76,7 @@ pub struct UpdaterApp {
     #[nwg_control(
         text: "",
         size: (380, 20),
-        position: (20, 135),
+        position: (20, 95),
         flags: "VISIBLE"
     )]
     hint_label: nwg::Label,
@@ -143,7 +134,6 @@ impl UpdaterApp {
         // 设置窗口标题
         let title = config::window_title();
         app.window.set_text(&title);
-        app.title_label.set_text(&title);
         app.hint_label.set_text("请勿关闭此窗口...");
 
         // 启动后台更新线程
