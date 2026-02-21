@@ -73,7 +73,7 @@ pub fn run_update(
             // 网络失败：检查是否已安装过
             if bootstrap::is_bootstrapped(base_dir) {
                 // 已安装 → 离线模式，跳过更新直接启动
-                eprintln!("网络检查失败，进入离线模式: {e:#}");
+                crate::logging::write(format!("网络检查失败，进入离线模式: {e:#}"));
                 on_progress(Progress::new(100, "离线模式 — 跳过更新"));
                 return Ok(UpdateResult::Offline);
             }
@@ -103,7 +103,7 @@ pub fn run_update(
         }
         Err(e) => {
             // 自更新失败不阻塞，记录日志继续
-            eprintln!("自更新检查失败（不影响正常使用）: {e:#}");
+            crate::logging::write(format!("自更新检查失败（不影响正常使用）: {e:#}"));
         }
     }
 

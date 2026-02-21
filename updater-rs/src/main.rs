@@ -15,6 +15,7 @@ mod bootstrap;
 mod config;
 mod fabric;
 mod gui;
+mod logging;
 mod packwiz;
 mod retry;
 mod selfupdate;
@@ -25,6 +26,9 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    // 初始化日志（写入系统临时目录）
+    logging::init();
+
     // 清理上次自更新残留的临时文件（.new / .old）
     selfupdate::cleanup_old_exe();
 

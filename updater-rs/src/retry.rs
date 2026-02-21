@@ -49,26 +49,26 @@ where
         match f() {
             Ok(value) => {
                 if attempt > 1 {
-                    eprintln!(
+                    crate::logging::write(format!(
                         "[重试] {} 在第 {} 次尝试时成功",
                         operation_name, attempt
-                    );
+                    ));
                 }
                 return Ok(value);
             }
             Err(e) => {
                 if attempt < max_attempts {
                     let delay = base_delay_secs.saturating_mul(2u64.saturating_pow(attempt - 1));
-                    eprintln!(
+                    crate::logging::write(format!(
                         "[重试] {} 失败（第 {}/{} 次尝试），{} 秒后重试...\n  原因: {:#}",
                         operation_name, attempt, max_attempts, delay, e
-                    );
+                    ));
                     thread::sleep(Duration::from_secs(delay));
                 } else {
-                    eprintln!(
+                    crate::logging::write(format!(
                         "[重试] {} 在 {} 次尝试后仍然失败",
                         operation_name, max_attempts
-                    );
+                    ));
                 }
                 last_error = Some(e);
             }
