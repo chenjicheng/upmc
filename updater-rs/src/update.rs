@@ -91,7 +91,7 @@ pub fn run_update(
     // ─────────────────────────────────────────────
     match selfupdate::check_and_update(
         remote.downloads.updater_url.as_deref(),
-        remote.downloads.updater_sha256.as_deref(),
+        remote.downloads.updater_version.as_deref(),
         on_progress,
     ) {
         Ok(selfupdate::SelfUpdateResult::Restarting) => {

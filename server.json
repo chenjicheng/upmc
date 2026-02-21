@@ -1,5 +1,5 @@
 {
-    "pack_url": "https://update.mc.chenjicheng.cn/upmc/pack.toml",
+    "pack_url": "https://update.mc.chenjicheng.cn/pack.toml",
 
     "downloads": {
         "jre_url": "https://ghfast.top/github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.6%2B7/OpenJDK21U-jre_x64_windows_hotspot_21.0.6_7.zip",
@@ -8,6 +8,6 @@
         "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.1.1/fabric-installer-1.1.1.jar",
         "settings_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/settings.zip",
         "updater_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/updater.exe",
-        "updater_sha256": "cb6a3002f7ec7b34cbda71f436082b7049b8f8faa5c9a66f52746cbce77b9589"
+        "updater_version": "0.1.0"
     }
 }

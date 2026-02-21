@@ -82,14 +82,14 @@ pub struct Downloads {
     pub settings_url: Option<String>,
 
     /// 更新器自身的下载地址（.exe）
-    /// 配合 updater_sha256 实现自动更新更新器本体
+    /// 配合 updater_version 实现自动更新更新器本体
     #[serde(default)]
     pub updater_url: Option<String>,
 
-    /// 更新器 exe 的 SHA256 哈希值（小写十六进制）
-    /// 与当前 exe 的哈希对比，不同则触发自更新
+    /// 更新器的最新版本号（语义化版本，如 "0.2.0"）
+    /// 与当前 exe 内嵌版本对比，远程版本更高时触发自更新
     #[serde(default)]
-    pub updater_sha256: Option<String>,
+    pub updater_version: Option<String>,
 }
 
 /// 本地已安装的版本信息（保存在 local.json）

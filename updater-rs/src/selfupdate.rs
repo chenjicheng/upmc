@@ -2,9 +2,9 @@
 // selfupdate.rs — 更新器自更新模块
 // ============================================================
 // 负责：
-//   1. 计算当前 exe 的 SHA256
-//   2. 对比远程 server.json 中的 updater_sha256
-//   3. 如果不同，下载新 exe → 替换自身 → 重启
+//   1. 读取当前 exe 内嵌的版本号
+//   2. 对比远程 server.json 中的 updater_version
+//   3. 如果远程版本更高，下载新 exe → 替换自身 → 重启
 //   4. 清理旧版 exe 残留 (.old)
 //
 // Windows 上正在运行的 exe 不能直接覆盖，但可以重命名。
@@ -15,10 +15,13 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::io::Read;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config;
+
+/// 当前更新器版本（编译时从 Cargo.toml 读取）
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 自更新检查结果
 pub enum SelfUpdateResult {
@@ -44,56 +47,71 @@ pub fn cleanup_old_exe() {
     }
 }
 
-/// 计算文件的 SHA256 哈希值（小写十六进制）
-fn sha256_file(path: &Path) -> Result<String> {
-    use sha2::Digest;
-    use std::io::BufReader;
-
-    let file = fs::File::open(path)
-        .with_context(|| format!("打开文件失败: {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-
-    let mut hasher = sha2::Sha256::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = reader.read(&mut buf).context("读取文件失败")?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
+/// 解析语义化版本号为 (major, minor, patch) 元组。
+///
+/// 支持格式如 "0.1.0"、"1.2.3"。无法解析时返回 None。
+fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
+    let parts: Vec<&str> = version.trim().split('.').collect();
+    if parts.len() != 3 {
+        return None;
     }
-    Ok(hex::encode(hasher.finalize()))
+    let major = parts[0].parse::<u64>().ok()?;
+    let minor = parts[1].parse::<u64>().ok()?;
+    let patch = parts[2].parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
+/// 判断远程版本是否比本地版本更高。
+///
+/// 如果任一版本号无法解析，拒绝更新（防止格式错误的版本号触发意外下载）。
+fn is_remote_newer(current: &str, remote: &str) -> bool {
+    match (parse_semver(current), parse_semver(remote)) {
+        (Some(cur), Some(rem)) => rem > cur,
+        _ => {
+            eprintln!("版本号解析失败，跳过自更新 (current={current:?}, remote={remote:?})");
+            false
+        }
+    }
 }
 
 /// 检查并执行自更新。
 ///
+/// 通过比较内嵌版本号与远程 updater_version 判断是否需要更新。
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
     updater_url: Option<&str>,
-    updater_sha256: Option<&str>,
+    updater_version: Option<&str>,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
-    // 如果没有配置自更新 URL 或哈希，或哈希为空字符串，跳过
-    let (url, expected_hash) = match (updater_url, updater_sha256) {
-        (Some(u), Some(h)) if !u.is_empty() && !h.is_empty() => (u, h),
+    // 如果没有配置自更新 URL 或版本号，或为空字符串，跳过
+    let (url, remote_version) = match (updater_url, updater_version) {
+        (Some(u), Some(v)) if !u.is_empty() && !v.is_empty() => (u, v),
         _ => return Ok(SelfUpdateResult::UpToDate),
     };
 
-    let exe_path = current_exe_path()?;
-
     on_progress(crate::update::Progress::new(1, "检查更新器版本..."));
 
-    // 计算当前 exe 的哈希
-    let current_hash = sha256_file(&exe_path)?;
-
-    if current_hash.eq_ignore_ascii_case(expected_hash) {
+    // 比较版本号
+    if !is_remote_newer(CURRENT_VERSION, remote_version) {
         return Ok(SelfUpdateResult::UpToDate);
     }
 
-    on_progress(crate::update::Progress::new(2, "发现更新器新版本，正在下载..."));
+    on_progress(crate::update::Progress::new(
+        2,
+        format!(
+            "发现更新器新版本 {} → {}，正在下载...",
+            CURRENT_VERSION, remote_version
+        ),
+    ));
 
     // 下载新 exe 到临时文件
+    let exe_path = current_exe_path()?;
     let temp_path = exe_path.with_extension("exe.new");
+
+    // 清理上次可能残留的临时文件
+    if temp_path.exists() {
+        fs::remove_file(&temp_path).ok();
+    }
 
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS))
@@ -140,15 +158,22 @@ pub fn check_and_update(
     }
     drop(file);
 
-    // 验证下载的文件哈希
-    let new_hash = sha256_file(&temp_path)?;
-    if !new_hash.eq_ignore_ascii_case(expected_hash) {
+    // 基本完整性校验：检查文件大小不为 0 且是有效的 PE 文件
+    let file_size = fs::metadata(&temp_path)
+        .context("读取下载文件信息失败")?
+        .len();
+    if file_size == 0 {
         let _ = fs::remove_file(&temp_path);
-        anyhow::bail!(
-            "更新器下载校验失败\n\
-             预期: {expected_hash}\n\
-             实际: {new_hash}"
-        );
+        anyhow::bail!("下载的更新器文件为空");
+    }
+    // 检查 PE 文件头 (MZ magic)
+    {
+        let mut f = fs::File::open(&temp_path).context("打开下载文件失败")?;
+        let mut magic = [0u8; 2];
+        if std::io::Read::read_exact(&mut f, &mut magic).is_err() || &magic != b"MZ" {
+            let _ = fs::remove_file(&temp_path);
+            anyhow::bail!("下载的文件不是有效的可执行文件");
+        }
     }
 
     on_progress(crate::update::Progress::new(10, "正在替换更新器..."));
