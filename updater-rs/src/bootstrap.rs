@@ -20,6 +20,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::config;
+use crate::retry;
 use crate::update::Progress;
 use crate::version::Downloads;
 
@@ -170,6 +171,33 @@ pub fn run_bootstrap(
 /// progress_start / progress_end 定义了这次下载在总进度条中占的范围。
 /// 例如 start=5, end=28 表示从 5% 到 28%。
 fn download_file(
+    url: &str,
+    dest: &Path,
+    on_progress: &dyn Fn(Progress),
+    progress_start: u32,
+    progress_end: u32,
+) -> Result<()> {
+    let url_owned = url.to_string();
+    let dest_owned = dest.to_path_buf();
+
+    retry::with_retry(
+        config::RETRY_MAX_ATTEMPTS,
+        config::RETRY_BASE_DELAY_SECS,
+        &format!("下载 {}", url),
+        || {
+            download_file_inner(
+                &url_owned,
+                &dest_owned,
+                on_progress,
+                progress_start,
+                progress_end,
+            )
+        },
+    )
+}
+
+/// download_file 的内部实现（单次尝试）。
+fn download_file_inner(
     url: &str,
     dest: &Path,
     on_progress: &dyn Fn(Progress),

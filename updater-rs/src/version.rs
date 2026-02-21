@@ -14,6 +14,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::config;
+use crate::retry;
 
 /// 服务器端配置（从远程 server.json 反序列化）
 ///
@@ -108,6 +109,16 @@ pub struct LocalVersion {
 ///   2. GET pack.toml   → 解析 minecraft 和 fabric 版本
 ///   3. 合并为 RemoteVersion
 pub fn fetch_remote_version() -> Result<RemoteVersion> {
+    retry::with_retry(
+        config::RETRY_MAX_ATTEMPTS,
+        config::RETRY_BASE_DELAY_SECS,
+        "获取远程版本信息",
+        || fetch_remote_version_inner(),
+    )
+}
+
+/// fetch_remote_version 的内部实现（单次尝试）。
+fn fetch_remote_version_inner() -> Result<RemoteVersion> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
         .build()

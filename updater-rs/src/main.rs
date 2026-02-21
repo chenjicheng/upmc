@@ -16,6 +16,7 @@ mod config;
 mod fabric;
 mod gui;
 mod packwiz;
+mod retry;
 mod selfupdate;
 mod update;
 mod version;

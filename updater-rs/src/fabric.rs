@@ -16,6 +16,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::config;
+use crate::retry;
 
 /// 调用 Fabric Installer CLI 安装指定版本的 MC + Fabric Loader。
 ///
@@ -76,11 +77,37 @@ pub fn install_fabric(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+
+        let exit_code_str = match output.status.code() {
+            Some(code) => format!("{}", code),
+            None => "未知（进程被终止）".to_string(),
+        };
+
+        let stdout_display = if stdout.trim().is_empty() {
+            "（无输出）".to_string()
+        } else {
+            stdout.trim().to_string()
+        };
+        let stderr_display = if stderr.trim().is_empty() {
+            "（无输出）".to_string()
+        } else {
+            stderr.trim().to_string()
+        };
+
         bail!(
-            "Fabric 安装失败 (exit code: {:?}):\nstdout: {}\nstderr: {}",
-            output.status.code(),
-            stdout,
-            stderr
+            "Fabric 安装失败（退出码: {}）\n\
+             \n\
+             ── 标准输出 ──\n{}\n\
+             \n\
+             ── 错误输出 ──\n{}\n\
+             \n\
+             目标版本: MC {} + Fabric Loader {}\n\
+             建议: 请检查网络连接后重试，如果问题持续请截图联系管理员。",
+            exit_code_str,
+            stdout_display,
+            stderr_display,
+            mc_version,
+            fabric_version,
         );
     }
 
@@ -233,6 +260,19 @@ pub fn fix_version_isolation(base_dir: &Path, version_tag: &str) -> Result<()> {
 ///   4. 从 JSON 中提取 client jar URL
 ///   5. 下载 client.jar → versions/<ver>/<ver>.jar
 fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
+    let mc_dir_owned = mc_dir.to_path_buf();
+    let ver_owned = mc_version.to_string();
+
+    retry::with_retry(
+        config::RETRY_MAX_ATTEMPTS,
+        config::RETRY_BASE_DELAY_SECS,
+        &format!("下载原版 MC {}", mc_version),
+        || download_vanilla_version_inner(&mc_dir_owned, &ver_owned),
+    )
+}
+
+/// download_vanilla_version 的内部实现（单次尝试）。
+fn download_vanilla_version_inner(mc_dir: &Path, mc_version: &str) -> Result<()> {
     let ver_dir = mc_dir.join("versions").join(mc_version);
     let ver_json_path = ver_dir.join(format!("{mc_version}.json"));
     let ver_jar_path = ver_dir.join(format!("{mc_version}.jar"));

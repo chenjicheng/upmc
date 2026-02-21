@@ -50,6 +50,13 @@ pub const HTTP_TIMEOUT_SECS: u64 = 30;
 /// 大文件下载超时（JRE ~50MB）
 pub const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
 
+// ── 重试 ──
+
+/// 网络操作最大重试次数（含首次尝试）
+pub const RETRY_MAX_ATTEMPTS: u32 = 3;
+/// 首次重试前等待秒数（后续指数退避：3s → 6s）
+pub const RETRY_BASE_DELAY_SECS: u64 = 3;
+
 // ── PCL2 配置模板 ──
 
 /// 首次安装时自动生成的 Setup.ini

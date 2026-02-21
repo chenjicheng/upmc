@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config;
+use crate::retry;
 
 /// 当前更新器版本（编译时从 Cargo.toml 读取）
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -189,7 +190,14 @@ pub fn check_and_update(
         Ok(())
     };
 
-    if let Err(e) = download_and_verify() {
+    let result = retry::with_retry(
+        config::RETRY_MAX_ATTEMPTS,
+        config::RETRY_BASE_DELAY_SECS,
+        "下载更新器",
+        download_and_verify,
+    );
+
+    if let Err(e) = result {
         let _ = fs::remove_file(&temp_path);
         return Err(e);
     }
