@@ -24,7 +24,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // 清理上次自更新残留的 .old 文件
+    // 清理上次自更新残留的临时文件（.new / .old）
     selfupdate::cleanup_old_exe();
 
     // 获取 exe 所在的目录作为基准路径
