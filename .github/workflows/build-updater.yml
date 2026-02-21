@@ -1,0 +1,124 @@
+# ============================================================
+# GitHub Actions: 编译更新器并发布
+# ============================================================
+# 触发条件：推送 v* 格式的 tag（如 v0.2.0）
+#
+# 流程：
+#   1. 校验 tag 版本号与 Cargo.toml 一致
+#   2. 编译 Rust 更新器（Windows Release）
+#   3. 上传 updater.exe 到 GitHub Releases 的 tools tag（覆盖已有）
+#   4. 更新 main 分支 server.json 中的 updater_version
+#   5. 触发 Pages 部署（使新版本号生效）
+#
+# 前提：
+#   - GitHub Releases 中已存在名为 "tools" 的 Release
+#   - tag 版本号与 updater-rs/Cargo.toml 中的 version 一致
+# ============================================================
+
+name: 编译更新器
+
+on:
+  push:
+    tags: ['v*']
+
+  # 允许手动触发（Actions 页面点 "Run workflow"）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write      # 需要触发 Pages 部署工作流
+
+# 串行执行，避免并发推送 main 导致冲突
+concurrency:
+  group: build-updater
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 校验版本号一致
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $tagVersion = $env:TAG_NAME.TrimStart("v")
+          $cargoContent = Get-Content updater-rs/Cargo.toml -Raw
+          if ($cargoContent -match '(?s)\[package\].*?version\s*=\s*"([^"]+)"') {
+            $cargoVersion = $Matches[1]
+          } else {
+            Write-Error "无法从 Cargo.toml 读取版本号"
+            exit 1
+          }
+          if ($tagVersion -ne $cargoVersion) {
+            Write-Error "Tag 版本 ($tagVersion) 与 Cargo.toml 版本 ($cargoVersion) 不一致！请确保两者一致后重新打 tag。"
+            exit 1
+          }
+          Write-Host "版本号校验通过: $tagVersion" -ForegroundColor Green
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            updater-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('updater-rs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: 编译 Release
+        working-directory: updater-rs
+        run: cargo build --release
+
+      - name: 上传到 tools Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Copy-Item updater-rs/target/release/upmc-updater.exe updater.exe
+          $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
+          Write-Host "产物大小: $size MB"
+          gh release upload tools updater.exe --clobber
+          Write-Host "已上传到 tools Release" -ForegroundColor Green
+
+      - name: 更新 server.json 版本号并推送 main
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG_NAME.TrimStart("v")
+
+          # 切换到 main 分支
+          git fetch origin main
+          git checkout main
+
+          # 替换 updater_version（保持文件格式不变）
+          $content = [System.IO.File]::ReadAllText("server.json", [System.Text.Encoding]::UTF8)
+          $content = $content -replace '"updater_version"\s*:\s*"[^"]*"', "`"updater_version`": `"$version`""
+          [System.IO.File]::WriteAllText("server.json", $content, (New-Object System.Text.UTF8Encoding $false))
+
+          # 检查是否有实际变更
+          git add server.json
+          $changedFiles = git diff --cached --name-only
+          if ($changedFiles) {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: updater_version → $version"
+            git push origin main
+            Write-Host "已更新 server.json 并推送到 main" -ForegroundColor Green
+
+            # 触发 Pages 部署（GITHUB_TOKEN 的 push 事件不会自动触发其他工作流）
+            gh workflow run publish.yml --ref main
+            Write-Host "已触发 Pages 部署" -ForegroundColor Green
+          } else {
+            Write-Host "server.json 版本号未变更，跳过推送" -ForegroundColor Yellow
+          }

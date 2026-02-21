@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# build-release.ps1 — 编译更新器 exe
+# build-release.ps1 — 本地编译更新器 exe（开发调试用）
 # ============================================================
 # 使用方法：
 #   .\scripts\build-release.ps1
@@ -9,6 +9,13 @@
 #
 # 这就是需要分发给玩家的唯一文件。
 # 玩家双击后，exe 会自动下载所有依赖组件。
+#
+# 注意：正式发布请使用 CI 自动流程：
+#   1. 修改 updater-rs/Cargo.toml 中的 version
+#   2. 提交后打 tag：git tag v<版本号>
+#   3. 推送 tag：git push origin v<版本号>
+#   4. GitHub Actions 会自动编译、上传到 Releases、更新 server.json
+#   详见 .github/workflows/build-updater.yml
 # ============================================================
 
 $ErrorActionPreference = "Stop"
