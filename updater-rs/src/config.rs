@@ -7,7 +7,7 @@
 
 use anyhow::{bail, Result};
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 // ── 远程配置 ──
@@ -24,7 +24,13 @@ pub const FABRIC_INSTALLER_JAR: &str = "updater/fabric-installer.jar";
 pub const MINECRAFT_DIR: &str = ".minecraft";
 pub const PCL2_EXE: &str = "Plain Craft Launcher 2.exe";
 pub const PCL2_SETUP_INI_PATH: &str = "Setup.ini";
-pub const LOCAL_JRE_JAVA: &str = "jre/bin/java.exe";
+
+/// Java 下载页面 URL（当系统未安装 Java 时自动打开）
+pub const JAVA_DOWNLOAD_URL: &str =
+    "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jre/x64/windows";
+
+/// Java 未找到时错误消息中包含的标记，GUI 据此显示友好安装提示
+pub const JAVA_NOT_FOUND_MARKER: &str = "[JAVA_NOT_FOUND]";
 
 // ── 安装目录 ──
 
@@ -47,7 +53,7 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 小文件请求超时（server.json 等）
 pub const HTTP_TIMEOUT_SECS: u64 = 30;
-/// 大文件下载超时（JRE ~50MB）
+/// 大文件下载超时
 pub const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
 
 // ── 重试 ──
@@ -86,17 +92,12 @@ LaunchArgumentWindowHeight=720\r\n\
 /// 自动查找 Java 可执行文件。
 ///
 /// 搜索顺序：
-///   1. 本地下载的 JRE (jre/bin/java.exe)
-///   2. JAVA_HOME 环境变量
-///   3. 系统 PATH
-pub fn find_java(base_dir: &Path) -> Result<PathBuf> {
-    // 1. 本地 JRE（bootstrap 阶段下载的）
-    let local = base_dir.join(LOCAL_JRE_JAVA);
-    if local.exists() {
-        return Ok(local);
-    }
-
-    // 2. JAVA_HOME
+///   1. JAVA_HOME 环境变量
+///   2. 系统 PATH
+///
+/// 如果找不到 Java，会自动打开 Java 下载页面并返回错误。
+pub fn find_java() -> Result<PathBuf> {
+    // 1. JAVA_HOME
     if let Ok(java_home) = std::env::var("JAVA_HOME") {
         let p = PathBuf::from(&java_home).join("bin/java.exe");
         if p.exists() {
@@ -104,7 +105,7 @@ pub fn find_java(base_dir: &Path) -> Result<PathBuf> {
         }
     }
 
-    // 3. PATH（使用 where 命令查找）
+    // 2. PATH（使用 where 命令查找）
     if let Ok(output) = Command::new("where").arg("java").creation_flags(CREATE_NO_WINDOW).output()
         && output.status.success()
     {
@@ -117,8 +118,16 @@ pub fn find_java(base_dir: &Path) -> Result<PathBuf> {
         }
     }
 
+    // 自动打开 Java 下载页面
+    let _ = Command::new("cmd")
+        .args(["/c", "start", "", JAVA_DOWNLOAD_URL])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+
     bail!(
-        "找不到 Java。\n预期位置: {}\n请确保首次安装已完成。",
-        local.display()
+        "{} 系统中未检测到 Java 环境。\n\
+         正在尝试打开 Java 下载页面，如未自动打开请手动访问：\n\
+         {JAVA_DOWNLOAD_URL}",
+        JAVA_NOT_FOUND_MARKER
     )
 }

@@ -199,10 +199,27 @@ impl UpdaterApp {
                 self.hint_label.set_text("请截图联系管理员");
                 self.progress_bar.set_pos(0);
 
-                // 弹出可复制的日志窗口
+                let is_java_not_found = error.contains(config::JAVA_NOT_FOUND_MARKER);
                 let log_text = state.log.join("\r\n");
                 drop(state); // 释放锁再弹窗（弹窗会阻塞）
-                show_error_log_dialog(&self.window, &log_text);
+
+                if is_java_not_found {
+                    // Java 未安装：显示友好提示（下载页已尝试自动打开）
+                    nwg::modal_info_message(
+                        &self.window,
+                        "需要安装 Java",
+                        &format!(
+                            "未检测到系统 Java 环境。\n\
+                             请安装 Java 后重新运行程序。\n\n\
+                             下载地址（如未自动打开请手动访问）：\n{}",
+                            config::JAVA_DOWNLOAD_URL
+                        ),
+                    );
+                    nwg::stop_thread_dispatch();
+                } else {
+                    // 弹出可复制的日志窗口
+                    show_error_log_dialog(&self.window, &log_text);
+                }
             } else if state.exit_only {
                 // 自更新重启：直接关闭窗口，不启动 PCL2
                 drop(state);

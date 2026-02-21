@@ -1,19 +1,18 @@
 // ============================================================
 // bootstrap.rs — 首次运行自举模块
 // ============================================================
-// 当玩家第一次双击 exe 时，.minecraft、PCL2、JRE 等都不存在。
+// 当玩家第一次双击 exe 时，.minecraft、PCL2 等都不存在。
 // 此模块负责：
 //   1. 检测哪些组件缺失
 //   2. 从远程下载所有必要文件
-//   3. 解压 JRE
-//   4. 生成 PCL2 配置文件 (Setup.ini)
-//   5. 创建目录结构
+//   3. 生成 PCL2 配置文件 (Setup.ini)
+//   4. 创建目录结构
 //
 // 所有下载 URL 来自 server.json 的 downloads 字段，
 // 管理员可远程控制下载源。
 // ============================================================
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -61,33 +60,6 @@ pub fn run_bootstrap(
         fs::create_dir_all(base_dir.join(dir))
             .with_context(|| format!("创建目录失败: {dir}"))?;
     }
-
-    // ── 下载 JRE（如果不存在） ──
-    let jre_java = base_dir.join("jre/bin/java.exe");
-    if !jre_java.exists() {
-        let jre_url = downloads
-            .jre_url
-            .as_deref()
-            .context("server.json 中未配置 JRE 下载地址 (downloads.jre_url)")?;
-
-        on_progress(Progress::new(5, "正在下载 Java 运行时..."));
-        let zip_path = base_dir.join("updater/jre-download.zip");
-        download_file(jre_url, &zip_path, on_progress, 5, 28)?;
-
-        on_progress(Progress::new(28, "正在解压 Java..."));
-        let jre_dir = base_dir.join("jre");
-        extract_zip_strip_toplevel(&zip_path, &jre_dir)
-            .context("解压 JRE 失败")?;
-
-        // 清理下载的 zip
-        fs::remove_file(&zip_path).ok();
-
-        // 验证解压成功
-        if !jre_java.exists() {
-            bail!("JRE 解压后找不到 java.exe，请联系管理员");
-        }
-    }
-    on_progress(Progress::new(30, "Java 就绪"));
 
     // ── 下载 PCL2（如果不存在） ──
     let pcl2_path = base_dir.join(config::PCL2_EXE);
@@ -256,105 +228,6 @@ fn download_file_inner(
     }
 
     Ok(())
-}
-
-/// 解压 ZIP 文件，自动去掉顶层目录。
-///
-/// 许多工具的 ZIP 包有一个顶层目录（如 `jdk-21.0.5+11-jre/`），
-/// 里面才是实际文件。此函数会检测并去掉这个前缀，
-/// 使内容直接解压到 dest 目录下。
-///
-/// 例如：ZIP 内 `jdk-21.0.5+11-jre/bin/java.exe`
-/// → 解压为 `dest/bin/java.exe`
-fn extract_zip_strip_toplevel(zip_path: &Path, dest: &Path) -> Result<()> {
-    let file = fs::File::open(zip_path)
-        .with_context(|| format!("打开 ZIP 失败: {}", zip_path.display()))?;
-    let mut archive = zip::ZipArchive::new(file).context("读取 ZIP 文件失败")?;
-
-    // 检测是否所有条目都有相同的顶层目录前缀
-    let common_prefix = detect_common_prefix(&mut archive);
-
-    fs::create_dir_all(dest)?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .with_context(|| format!("读取 ZIP 条目 #{i} 失败"))?;
-
-        let full_name = entry.name().to_string();
-
-        // 去掉顶层目录前缀
-        let relative = if let Some(ref prefix) = common_prefix {
-            let stripped = full_name
-                .strip_prefix(prefix)
-                .unwrap_or(&full_name);
-            stripped.trim_start_matches('/')
-        } else {
-            &full_name
-        };
-
-        // 跳过空路径（顶层目录本身）
-        if relative.is_empty() {
-            continue;
-        }
-
-        let out_path = dest.join(relative);
-
-        // 安全检查：防止 ZIP 路径遍历攻击（如 "../../../etc/passwd"）
-        if !out_path.starts_with(dest) {
-            bail!("ZIP 条目包含非法路径: {full_name}");
-        }
-
-        if entry.is_dir() {
-            fs::create_dir_all(&out_path)?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut outfile = fs::File::create(&out_path)
-                .with_context(|| format!("创建文件失败: {}", out_path.display()))?;
-            std::io::copy(&mut entry, &mut outfile)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// 检测 ZIP 文件中所有条目是否共享一个顶层目录前缀。
-///
-/// 如果是（例如所有文件都在 `jdk-21.0.5+11-jre/` 下），
-/// 返回该前缀（含尾部 `/`）。否则返回 None。
-fn detect_common_prefix(archive: &mut zip::ZipArchive<fs::File>) -> Option<String> {
-    if archive.is_empty() {
-        return None;
-    }
-
-    // 取第一个条目的第一级目录名
-    let candidate = {
-        let first = archive.by_index(0).ok()?;
-        let first_name = first.name().to_string();
-        first_name.split('/').next()?.to_string()
-        // first 在这里被 drop，释放对 archive 的借用
-    };
-
-    if candidate.is_empty() {
-        return None;
-    }
-
-    let prefix = format!("{candidate}/");
-
-    // 检查所有条目是否都以这个前缀开头
-    for i in 1..archive.len() {
-        let name = {
-            let entry = archive.by_index(i).ok()?;
-            entry.name().to_string()
-        };
-        if !name.starts_with(&prefix) {
-            return None;
-        }
-    }
-
-    Some(prefix)
 }
 
 /// 解压设置包 ZIP 到目标目录（不去除顶层目录）。
