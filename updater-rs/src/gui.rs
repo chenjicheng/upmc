@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::config;
+use crate::logging;
 use crate::update::{self, Progress, UpdateResult};
 
 /// 共享的进度状态，后台线程写入，GUI 线程读取。
@@ -32,8 +33,6 @@ struct SharedState {
     progress: Progress,
     finished: bool,
     error: Option<String>,
-    /// 完整日志记录，每一步都追加
-    log: Vec<String>,
     /// 仅退出，不启动 PCL2（自更新重启时使用）
     exit_only: bool,
     /// Java 未安装错误，GUI 显示友好提示而非技术日志
@@ -123,7 +122,6 @@ impl UpdaterApp {
                 },
                 finished: false,
                 error: None,
-                log: Vec::new(),
                 exit_only: false,
                 java_not_found: false,
             })),
@@ -148,8 +146,8 @@ impl UpdaterApp {
             // 执行更新，通过回调报告进度
             let result = update::run_update(&base_dir, &|progress: Progress| {
                 let mut s = state.lock().unwrap();
-                // 记录日志
-                s.log.push(format!("[{}%] {}", progress.percent, &progress.message));
+                // 记录日志到文件
+                logging::write(format!("[{}%] {}", progress.percent, &progress.message));
                 s.progress = progress;
                 // 通知 GUI 线程刷新
                 notice_sender.notice();
@@ -160,7 +158,7 @@ impl UpdaterApp {
             match result {
                 Ok(UpdateResult::SelfUpdateRestarting) => {
                     // 更新器已自更新并重启新进程，当前进程直接退出
-                    s.log.push("[重启] 更新器已更新，正在重启...".to_string());
+                    logging::write("[重启] 更新器已更新，正在重启...");
                     s.finished = true;
                     // 不设置 error，后续 GUI 判定为成功，
                     // 但通过 exit_only 标记避免启动 PCL2
@@ -169,13 +167,13 @@ impl UpdaterApp {
                     return;
                 }
                 Ok(UpdateResult::Success | UpdateResult::Offline) => {
-                    s.log.push("[完成] 更新成功".to_string());
+                    logging::write("[完成] 更新成功");
                     s.finished = true;
                 }
                 Err(e) => {
                     s.java_not_found = e.downcast_ref::<config::JavaNotFound>().is_some();
                     let err_msg = format!("{e:#}");
-                    s.log.push(format!("[错误] {}", &err_msg));
+                    logging::write(format!("[错误] {}", &err_msg));
                     s.error = Some(err_msg);
                     s.finished = true;
                 }
@@ -200,9 +198,14 @@ impl UpdaterApp {
                 self.progress_bar.set_pos(0);
 
                 let java_not_found = state.java_not_found;
-                let log_text = state.log.join("\r\n");
                 let error_text = error.clone();
                 drop(state); // 释放锁再弹窗（弹窗会阻塞）
+
+                // 从日志文件读取完整日志
+                let log_text = logging::read_all();
+                let log_path = logging::path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
 
                 if java_not_found {
                     // Java 未安装：显示友好提示（下载页已尝试自动打开）
@@ -224,7 +227,7 @@ impl UpdaterApp {
                     self.status_label
                         .set_text(&format!("更新失败: {error_text}"));
                     self.hint_label.set_text("请截图联系管理员");
-                    show_error_log_dialog(&self.window, &log_text);
+                    show_error_log_dialog(&self.window, &log_text, &log_path);
                 }
             } else if state.exit_only {
                 // 自更新重启：直接关闭窗口，不启动 PCL2
@@ -282,7 +285,7 @@ impl UpdaterApp {
 ///   - 只读多行 TextBox（可以全选复制）
 ///   - "复制日志" 按钮
 ///   - "关闭" 按钮
-fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
+fn show_error_log_dialog(parent: &nwg::Window, log_text: &str, log_path: &str) {
     // 构建窗口
     let mut window = Default::default();
     nwg::Window::builder()
@@ -298,7 +301,10 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
     // 提示标签
     let mut label = Default::default();
     nwg::Label::builder()
-        .text("更新过程中发生错误，以下是完整日志（可全选复制）：")
+        .text(&format!(
+            "更新过程中发生错误，以下是完整日志（日志文件: {}）：",
+            log_path
+        ))
         .size((560, 22))
         .position((20, 10))
         .parent(&window)

@@ -79,7 +79,7 @@ fn is_remote_newer(current: &str, remote: &str) -> bool {
     match (parse_semver(current), parse_semver(remote)) {
         (Some(cur), Some(rem)) => rem > cur,
         _ => {
-            eprintln!("版本号解析失败，跳过自更新 (current={current:?}, remote={remote:?})");
+            crate::logging::write(format!("版本号解析失败，跳过自更新 (current={current:?}, remote={remote:?})"));
             false
         }
     }
