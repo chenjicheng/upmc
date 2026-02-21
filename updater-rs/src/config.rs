@@ -5,7 +5,7 @@
 // 修改这里的常量即可适配不同服务器。
 // ============================================================
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -29,8 +29,22 @@ pub const PCL2_SETUP_INI_PATH: &str = "Setup.ini";
 pub const JAVA_DOWNLOAD_URL: &str =
     "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jre/x64/windows";
 
-/// Java 未找到时错误消息中包含的标记，GUI 据此显示友好安装提示
-pub const JAVA_NOT_FOUND_MARKER: &str = "[JAVA_NOT_FOUND]";
+/// Java 未找到时返回的错误类型，GUI 据此 downcast 识别并显示友好安装提示。
+#[derive(Debug)]
+pub struct JavaNotFound;
+
+impl std::fmt::Display for JavaNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "系统中未检测到 Java 环境。\n\
+             正在尝试打开 Java 下载页面，如未自动打开请手动访问：\n\
+             {JAVA_DOWNLOAD_URL}"
+        )
+    }
+}
+
+impl std::error::Error for JavaNotFound {}
 
 // ── 安装目录 ──
 
@@ -124,10 +138,5 @@ pub fn find_java() -> Result<PathBuf> {
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 
-    bail!(
-        "{} 系统中未检测到 Java 环境。\n\
-         正在尝试打开 Java 下载页面，如未自动打开请手动访问：\n\
-         {JAVA_DOWNLOAD_URL}",
-        JAVA_NOT_FOUND_MARKER
-    )
+    Err(anyhow::Error::new(JavaNotFound))
 }

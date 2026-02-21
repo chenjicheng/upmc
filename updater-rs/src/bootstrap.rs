@@ -12,7 +12,7 @@
 // 管理员可远程控制下载源。
 // ============================================================
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
