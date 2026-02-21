@@ -53,7 +53,7 @@ where
             }
             Err(e) => {
                 if attempt < max_attempts {
-                    let delay = base_delay_secs * (1 << (attempt - 1));
+                    let delay = base_delay_secs.saturating_mul(2u64.saturating_pow(attempt - 1));
                     eprintln!(
                         "[重试] {} 失败（第 {}/{} 次尝试），{} 秒后重试...\n  原因: {:#}",
                         operation_name, attempt, max_attempts, delay, e
@@ -70,7 +70,7 @@ where
         }
     }
 
-    // 为最终错误添加重试上下文
+    // Safe unwrap: loop guarantees at least one attempt was made
     let err = last_error.unwrap();
     Err(err.context(format!(
         "{} 重试 {} 次后仍然失败",

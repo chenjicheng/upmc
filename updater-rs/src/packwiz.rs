@@ -135,7 +135,7 @@ fn diagnose_sync_failure(stdout: &str, stderr: &str) -> String {
         hints.push("网络连接失败或超时，请检查网络是否正常");
     }
 
-    if stdout.contains("null") || combined.contains("nullpointerexception") {
+    if combined.contains("null") || combined.contains("nullpointerexception") {
         hints.push("版本信息获取失败（显示为 null），可能是网络问题导致远程数据未正确下载");
     }
 
