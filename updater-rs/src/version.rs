@@ -108,31 +108,30 @@ pub struct LocalVersion {
 ///   2. GET pack.toml   → 解析 minecraft 和 fabric 版本
 ///   3. 合并为 RemoteVersion
 pub fn fetch_remote_version() -> Result<RemoteVersion> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(config::HTTP_TIMEOUT_SECS))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
+        .build()
+        .into();
 
     // 1. 拉取 server.json
-    let response = agent
+    let body = agent
         .get(config::REMOTE_SERVER_JSON_URL)
         .call()
-        .context("无法连接到更新服务器，请检查网络")?;
-
-    let body = response
-        .into_string()
+        .context("无法连接到更新服务器，请检查网络")?
+        .body_mut()
+        .read_to_string()
         .context("读取服务器响应失败")?;
 
     let server_config: ServerConfig =
         serde_json::from_str(&body).context("解析 server.json 失败")?;
 
     // 2. 拉取 pack.toml 并解析版本
-    let pack_response = agent
+    let pack_toml = agent
         .get(&server_config.pack_url)
         .call()
-        .context("无法获取 pack.toml，请检查网络")?;
-
-    let pack_toml = pack_response
-        .into_string()
+        .context("无法获取 pack.toml，请检查网络")?
+        .body_mut()
+        .read_to_string()
         .context("读取 pack.toml 失败")?;
 
     let (mc_version, fabric_version) = parse_pack_toml_versions(&pack_toml)

@@ -182,9 +182,10 @@ fn download_file(
     }
 
     // 使用较长超时（大文件可能需要几分钟）
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS)))
+        .build()
+        .into();
 
     let response = agent
         .get(url)
@@ -193,11 +194,11 @@ fn download_file(
 
     // 尝试获取文件大小（用于进度百分比）
     let total_size = response
-        .header("Content-Length")
-        .and_then(|s| s.parse::<u64>().ok())
+        .body()
+        .content_length()
         .unwrap_or(0);
 
-    let mut reader = response.into_reader();
+    let mut reader = response.into_body().into_reader();
     let mut file = fs::File::create(dest)
         .with_context(|| format!("创建文件失败: {}", dest.display()))?;
 

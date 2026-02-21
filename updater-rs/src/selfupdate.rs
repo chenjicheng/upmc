@@ -113,9 +113,10 @@ pub fn check_and_update(
         fs::remove_file(&temp_path).ok();
     }
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS)))
+        .build()
+        .into();
 
     let response = agent
         .get(url)
@@ -124,11 +125,11 @@ pub fn check_and_update(
 
     // 获取文件大小
     let total_size = response
-        .header("Content-Length")
-        .and_then(|s| s.parse::<u64>().ok())
+        .body()
+        .content_length()
         .unwrap_or(0);
 
-    let mut reader = response.into_reader();
+    let mut reader = response.into_body().into_reader();
     let mut file = fs::File::create(&temp_path)
         .context("创建临时文件失败")?;
 

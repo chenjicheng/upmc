@@ -245,16 +245,18 @@ fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
     fs::create_dir_all(&ver_dir)
         .with_context(|| format!("创建版本目录失败: {}", ver_dir.display()))?;
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS)))
+        .build()
+        .into();
 
     // 1. 获取版本清单
     let manifest_str = agent
         .get(VERSION_MANIFEST_URL)
         .call()
         .context("获取 Mojang 版本清单失败")?
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .context("读取版本清单失败")?;
 
     let manifest: serde_json::Value = serde_json::from_str(&manifest_str)
@@ -278,7 +280,8 @@ fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
             .get(&version_url)
             .call()
             .with_context(|| format!("下载 MC {mc_version} version JSON 失败"))?
-            .into_string()
+            .body_mut()
+            .read_to_string()
             .context("读取 version JSON 失败")?;
 
         fs::write(&ver_json_path, &ver_json_str)
@@ -302,7 +305,7 @@ fn download_vanilla_version(mc_dir: &Path, mc_version: &str) -> Result<()> {
             .call()
             .with_context(|| format!("下载 MC {mc_version} 客户端 jar 失败"))?;
 
-        let mut reader = response.into_reader();
+        let mut reader = response.into_body().into_reader();
         let mut file = fs::File::create(&ver_jar_path)
             .with_context(|| format!("创建 {} 失败", ver_jar_path.display()))?;
 
