@@ -38,6 +38,8 @@ pub fn with_retry<F, T>(
 where
     F: Fn() -> Result<T>,
 {
+    assert!(max_attempts > 0, "max_attempts 必须至少为 1");
+
     let mut last_error = None;
 
     for attempt in 1..=max_attempts {

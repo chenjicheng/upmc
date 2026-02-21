@@ -139,11 +139,17 @@ fn diagnose_sync_failure(stdout: &str, stderr: &str) -> String {
         hints.push("版本信息获取失败（显示为 null），可能是网络问题导致远程数据未正确下载");
     }
 
-    if combined.contains("java.lang") || combined.contains("exception") {
+    if hints.is_empty() && (combined.contains("java.lang") || combined.contains("exception")) {
         hints.push("packwiz-installer 运行时发生 Java 异常");
     }
 
-    if combined.contains("ssl") || combined.contains("certificate") || combined.contains("https") {
+    if combined.contains("ssl")
+        || combined.contains("sslexception")
+        || combined.contains("sslhandshakeexception")
+        || combined.contains("handshake_failure")
+        || combined.contains("certificate")
+        || combined.contains("certificateerror")
+    {
         hints.push("SSL/TLS 连接问题，可能是证书错误或网络代理干扰");
     }
 
