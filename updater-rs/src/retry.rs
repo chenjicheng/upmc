@@ -13,12 +13,12 @@
 use std::thread;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, ensure, Result};
 
 /// 执行一个操作，失败时自动重试。
 ///
 /// # 参数
-/// - `max_attempts`: 最大尝试次数（含首次）
+/// - `max_attempts`: 最大尝试次数（含首次），必须 ≥ 1
 /// - `base_delay_secs`: 首次重试前等待秒数，后续翻倍（指数退避）
 /// - `operation_name`: 操作名称（用于日志）
 /// - `f`: 要执行的操作闭包
@@ -29,6 +29,9 @@ use anyhow::Result;
 ///
 /// # 返回
 /// 第一次成功的结果，或最后一次失败的错误（附加重试信息）
+///
+/// # 错误
+/// 如果 `max_attempts` 为 0，立即返回 `Err`。
 pub fn with_retry<F, T>(
     max_attempts: u32,
     base_delay_secs: u64,
@@ -38,7 +41,7 @@ pub fn with_retry<F, T>(
 where
     F: Fn() -> Result<T>,
 {
-    assert!(max_attempts > 0, "max_attempts 必须至少为 1");
+    ensure!(max_attempts > 0, "max_attempts 必须至少为 1");
 
     let mut last_error = None;
 
@@ -72,10 +75,12 @@ where
         }
     }
 
-    // Safe unwrap: loop guarantees at least one attempt was made
-    let err = last_error.unwrap();
-    Err(err.context(format!(
-        "{} 重试 {} 次后仍然失败",
-        operation_name, max_attempts
-    )))
+    // last_error 一定有值：ensure! 保证 max_attempts >= 1，循环至少执行一次
+    match last_error {
+        Some(err) => Err(err.context(format!(
+            "{} 重试 {} 次后仍然失败",
+            operation_name, max_attempts
+        ))),
+        None => bail!("{} 重试逻辑异常", operation_name),
+    }
 }

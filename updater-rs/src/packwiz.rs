@@ -35,24 +35,11 @@ use crate::retry;
 /// 内置重试机制：如果同步失败（通常因网络不稳定），
 /// 会自动重试最多 RETRY_MAX_ATTEMPTS 次。
 pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
-    let base_owned = base_dir.to_path_buf();
-    let url_owned = pack_url.to_string();
-
-    retry::with_retry(
-        config::RETRY_MAX_ATTEMPTS,
-        config::RETRY_BASE_DELAY_SECS,
-        "模组同步",
-        || sync_modpack_inner(&base_owned, &url_owned),
-    )
-}
-
-/// sync_modpack 的内部实现（单次尝试）。
-fn sync_modpack_inner(base_dir: &Path, pack_url: &str) -> Result<()> {
+    // ── 前置检查（确定性失败，不需要重试） ──
     let java = config::find_java(base_dir)?;
     let bootstrap_jar = base_dir.join(config::PACKWIZ_BOOTSTRAP_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 
-    // 检查必要文件
     if !bootstrap_jar.exists() {
         bail!(
             "找不到 packwiz-installer-bootstrap: {}",
@@ -60,20 +47,37 @@ fn sync_modpack_inner(base_dir: &Path, pack_url: &str) -> Result<()> {
         );
     }
 
-    // 确保 .minecraft 目录存在
     std::fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
 
+    // ── 网络操作（可能因网络波动失败，需要重试） ──
+    let url_owned = pack_url.to_string();
+
+    retry::with_retry(
+        config::RETRY_MAX_ATTEMPTS,
+        config::RETRY_BASE_DELAY_SECS,
+        "模组同步",
+        || run_packwiz_installer(&java, &bootstrap_jar, &mc_dir, &url_owned),
+    )
+}
+
+/// 执行 packwiz-installer 进程（单次尝试）。
+fn run_packwiz_installer(
+    java: &Path,
+    bootstrap_jar: &Path,
+    mc_dir: &Path,
+    pack_url: &str,
+) -> Result<()> {
     // 调用 packwiz-installer-bootstrap
     // 注意：工作目录设置为 .minecraft，
     // 因为 packwiz-installer 相对于工作目录来存放文件
-    let output = Command::new(&java)
+    let output = Command::new(java)
         .arg("-jar")
-        .arg(&bootstrap_jar)
+        .arg(bootstrap_jar)
         .arg("-g") // 无头模式（不弹 GUI）
         .arg("-s")
         .arg("client") // 客户端模式
         .arg(pack_url) // 远程 pack.toml URL
-        .current_dir(&mc_dir) // 工作目录 = .minecraft
+        .current_dir(mc_dir) // 工作目录 = .minecraft
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()
         .context("启动 packwiz-installer 失败，请检查 Java 运行时是否正常")?;
