@@ -9,17 +9,17 @@ native-windows-gui = "1.0"
 native-windows-derive = "1.0"
 
 # HTTP 请求: 纯 Rust 实现，无需 OpenSSL
-ureq = "2"
+ureq = "3.2.0"
 
 # JSON 序列化/反序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # 错误处理: 简化 Result 链
-anyhow = "1"
+anyhow = "1.0.102"
 
 # ZIP 解压: 用于解压下载的 JRE
-zip = "2"
+zip = "8.1.0"
 
 # Windows 专用: 隐藏控制台窗口、设置 exe 属性
 [target.'cfg(windows)'.dependencies]

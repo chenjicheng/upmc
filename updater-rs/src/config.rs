@@ -34,7 +34,9 @@ pub const INSTALL_DIR: &str = "CJC整合包";
 
 // ── GUI ──
 
-pub const WINDOW_TITLE: &str = "我的服务器 - 更新器";
+pub fn window_title() -> String {
+    format!("我的服务器 - 更新器 v{}", env!("CARGO_PKG_VERSION"))
+}
 
 // ── Windows 进程创建标志 ──
 

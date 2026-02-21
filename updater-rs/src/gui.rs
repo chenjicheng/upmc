@@ -141,8 +141,9 @@ impl UpdaterApp {
         let app = UpdaterApp::build_ui(app).expect("构建 UI 失败");
 
         // 设置窗口标题
-        app.window.set_text(config::WINDOW_TITLE);
-        app.title_label.set_text(config::WINDOW_TITLE);
+        let title = config::window_title();
+        app.window.set_text(&title);
+        app.title_label.set_text(&title);
         app.hint_label.set_text("请勿关闭此窗口...");
 
         // 启动后台更新线程
