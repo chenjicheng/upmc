@@ -35,7 +35,7 @@ pub fn install_fabric(
     mc_version: &str,
     fabric_version: &str,
 ) -> Result<()> {
-    let java = config::find_java(base_dir)?;
+    let java = config::find_java()?;
     let installer_jar = base_dir.join(config::FABRIC_INSTALLER_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 

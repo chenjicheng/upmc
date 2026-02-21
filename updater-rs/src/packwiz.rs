@@ -36,7 +36,7 @@ use crate::retry;
 /// 会自动重试最多 RETRY_MAX_ATTEMPTS 次。
 pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
     // ── 前置检查（确定性失败，不需要重试） ──
-    let java = config::find_java(base_dir)?;
+    let java = config::find_java()?;
     let bootstrap_jar = base_dir.join(config::PACKWIZ_BOOTSTRAP_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 

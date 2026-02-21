@@ -36,6 +36,8 @@ struct SharedState {
     log: Vec<String>,
     /// 仅退出，不启动 PCL2（自更新重启时使用）
     exit_only: bool,
+    /// Java 未安装错误，GUI 显示友好提示而非技术日志
+    java_not_found: bool,
 }
 
 /// GUI 窗口定义
@@ -123,6 +125,7 @@ impl UpdaterApp {
                 error: None,
                 log: Vec::new(),
                 exit_only: false,
+                java_not_found: false,
             })),
             base_dir: RefCell::new(base_dir),
             ..Default::default()
@@ -170,6 +173,7 @@ impl UpdaterApp {
                     s.finished = true;
                 }
                 Err(e) => {
+                    s.java_not_found = e.downcast_ref::<config::JavaNotFound>().is_some();
                     let err_msg = format!("{e:#}");
                     s.log.push(format!("[错误] {}", &err_msg));
                     s.error = Some(err_msg);
@@ -193,16 +197,35 @@ impl UpdaterApp {
 
         if state.finished {
             if let Some(ref error) = state.error {
-                // 出错了：显示错误摘要
-                self.status_label
-                    .set_text(&format!("更新失败: {error}"));
-                self.hint_label.set_text("请截图联系管理员");
                 self.progress_bar.set_pos(0);
 
-                // 弹出可复制的日志窗口
+                let java_not_found = state.java_not_found;
                 let log_text = state.log.join("\r\n");
+                let error_text = error.clone();
                 drop(state); // 释放锁再弹窗（弹窗会阻塞）
-                show_error_log_dialog(&self.window, &log_text);
+
+                if java_not_found {
+                    // Java 未安装：显示友好提示（下载页已尝试自动打开）
+                    self.status_label.set_text("需要安装 Java");
+                    self.hint_label.set_text("请安装 Java 后重新运行程序");
+                    nwg::modal_info_message(
+                        &self.window,
+                        "需要安装 Java",
+                        &format!(
+                            "未检测到系统 Java 环境。\n\
+                             请安装 Java 后重新运行程序。\n\n\
+                             下载地址（如未自动打开请手动访问）：\n{}",
+                            config::JAVA_DOWNLOAD_URL
+                        ),
+                    );
+                    nwg::stop_thread_dispatch();
+                } else {
+                    // 其他错误：显示错误摘要和可复制的日志窗口
+                    self.status_label
+                        .set_text(&format!("更新失败: {error_text}"));
+                    self.hint_label.set_text("请截图联系管理员");
+                    show_error_log_dialog(&self.window, &log_text);
+                }
             } else if state.exit_only {
                 // 自更新重启：直接关闭窗口，不启动 PCL2
                 drop(state);
