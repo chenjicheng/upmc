@@ -8,6 +8,6 @@
         "fabric_installer_url": "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.1.1/fabric-installer-1.1.1.jar",
         "settings_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/settings.zip",
         "updater_url": "https://ghfast.top/github.com/chenjicheng/upmc/releases/download/tools/updater.exe",
-        "updater_version": "0.2.0"
+        "updater_version": "0.3.0"
     }
 }
