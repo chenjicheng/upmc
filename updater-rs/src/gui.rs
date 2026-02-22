@@ -113,7 +113,7 @@ pub struct UpdaterApp {
     /// 共享进度（后台线程写，GUI 读）
     shared_state: Arc<Mutex<SharedState>>,
 
-    /// exe 所在的根目录
+    /// 安装基准目录（用户文档文件夹下的 CJC整合包/）
     base_dir: RefCell<PathBuf>,
 }
 

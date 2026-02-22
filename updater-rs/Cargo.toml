@@ -21,6 +21,9 @@ anyhow = "1.0.102"
 # ZIP 解压: 用于解压下载的 JRE
 zip = "8.1.0"
 
+# 获取用户目录（文档、桌面等）
+dirs = "6"
+
 # Windows 专用: 隐藏控制台窗口、设置 exe 属性
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["wincon"] }

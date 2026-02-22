@@ -16,7 +16,7 @@ use std::process::Command;
 pub const REMOTE_SERVER_JSON_URL: &str =
     "https://update.mc.chenjicheng.cn/server.json";
 
-// ── 本地路径（相对于 exe 所在目录） ──
+// ── 本地路径（相对于安装基准目录） ──
 
 pub const LOCAL_VERSION_FILE: &str = "updater/local.json";
 pub const PACKWIZ_BOOTSTRAP_JAR: &str = "updater/packwiz-installer-bootstrap.jar";
@@ -48,9 +48,36 @@ impl std::error::Error for JavaNotFound {}
 
 // ── 安装目录 ──
 
-/// 组件安装子目录（相对于 exe 所在目录）
-/// exe 本身在外层，所有下载内容（PCL2、JRE、.minecraft 等）在此子目录下
-pub const INSTALL_DIR: &str = "CJC整合包";
+/// 安装子目录名称
+/// 所有游戏组件（PCL2、.minecraft 等）存放在 文档/CJC整合包/ 下
+pub const INSTALL_DIR_NAME: &str = "CJC整合包";
+
+/// 获取安装基准目录：用户文档文件夹下的 INSTALL_DIR_NAME 子目录。
+///
+/// 例如：`C:\Users\<用户>\Documents\CJC整合包\`
+pub fn get_install_dir() -> PathBuf {
+    let doc_dir = dirs::document_dir()
+        .unwrap_or_else(|| {
+            // 极端情况下无法获取文档文件夹，回退到 exe 所在目录
+            eprintln!("警告: 无法获取文档文件夹，回退到 exe 目录");
+            std::env::current_exe()
+                .expect("无法获取 exe 路径")
+                .parent()
+                .expect("无法获取 exe 所在目录")
+                .to_path_buf()
+        });
+    doc_dir.join(INSTALL_DIR_NAME)
+}
+
+/// 获取旧版安装目录（exe 所在目录下的子目录），用于迁移检测。
+pub fn get_legacy_install_dir() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .expect("无法获取 exe 路径")
+        .parent()
+        .expect("无法获取 exe 所在目录")
+        .to_path_buf();
+    exe_dir.join(INSTALL_DIR_NAME)
+}
 
 // ── GUI ──
 
