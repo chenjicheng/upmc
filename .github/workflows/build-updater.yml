@@ -1,18 +1,21 @@
 # ============================================================
 # GitHub Actions: 编译更新器并发布
 # ============================================================
-# 触发条件：推送 v* 格式的 tag（如 v0.2.0）
+# 触发条件：推送 v* 格式的 tag（如 v0.3.5）
 #
 # 流程：
 #   1. 校验 tag 版本号与 Cargo.toml 一致
 #   2. 编译 Rust 更新器（Windows Release）
-#   3. 上传 updater.exe 到 GitHub Releases 的 tools tag（覆盖已有）
-#   4. 更新 main 分支 server.json 中的 updater_version
-#   5. 触发 Pages 部署（使新版本号生效）
+#   3. 上传 updater.exe 到 tools Release（向后兼容旧版更新器）
+#   4. 为当前 tag 创建正式 GitHub Release + 附带 updater.exe
+#   5. 从最新 Release 动态生成 version.json
+#   6. 部署 version.json 到 GitHub Pages (upmc.chenjicheng.cn)
 #
 # 前提：
 #   - GitHub Releases 中已存在名为 "tools" 的 Release
 #   - tag 版本号与 updater-rs/Cargo.toml 中的 version 一致
+#   - 仓库 Settings → Pages → Source 选择 "GitHub Actions"
+#   - DNS: upmc.chenjicheng.cn CNAME → <username>.github.io
 # ============================================================
 
 name: 编译更新器
@@ -26,9 +29,10 @@ on:
 
 permissions:
   contents: write
-  actions: write      # 需要触发 Pages 部署工作流
+  pages: write
+  id-token: write
 
-# 串行执行，避免并发推送 main 导致冲突
+# 串行执行，避免并发冲突
 concurrency:
   group: build-updater
   cancel-in-progress: false
@@ -73,7 +77,7 @@ jobs:
         working-directory: updater-rs
         run: cargo build --release
 
-      - name: 上传到 tools Release
+      - name: 上传到 tools Release（向后兼容）
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,36 +88,62 @@ jobs:
           gh release upload tools updater.exe --clobber
           Write-Host "已上传到 tools Release" -ForegroundColor Green
 
-      - name: 更新 server.json 版本号并推送 main
+      - name: 创建正式 Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          $version = $env:TAG_NAME.TrimStart("v")
+          # 如果该 tag 的 Release 已存在，先删除
+          gh release delete $env:TAG_NAME --yes 2>$null
+          # 创建新 Release 并附带 exe
+          gh release create $env:TAG_NAME updater.exe `
+            --title $env:TAG_NAME `
+            --generate-notes
+          Write-Host "已创建 Release $env:TAG_NAME" -ForegroundColor Green
 
-          # 切换到 main 分支
-          git fetch origin main
-          git checkout main
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
 
-          # 替换 updater_version（保持文件格式不变）
-          $content = [System.IO.File]::ReadAllText("server.json", [System.Text.Encoding]::UTF8)
-          $content = $content -replace '"updater_version"\s*:\s*"[^"]*"', "`"updater_version`": `"$version`""
-          [System.IO.File]::WriteAllText("server.json", $content, (New-Object System.Text.UTF8Encoding $false))
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
-          # 检查是否有实际变更
-          git add server.json
-          $changedFiles = git diff --cached --name-only
-          if ($changedFiles) {
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore: updater_version → $version"
-            git push origin main
-            Write-Host "已更新 server.json 并推送到 main" -ForegroundColor Green
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-            # 触发 Pages 部署（GITHUB_TOKEN 的 push 事件不会自动触发其他工作流）
-            gh workflow run publish.yml --ref main
-            Write-Host "已触发 Pages 部署" -ForegroundColor Green
-          } else {
-            Write-Host "server.json 版本号未变更，跳过推送" -ForegroundColor Yellow
-          }
+      - name: 生成 version.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 从最新 Release 获取信息
+          RELEASE_JSON=$(gh release view --json tagName,assets)
+          TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tagName')
+          VERSION="${TAG_NAME#v}"
+          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
+          DOWNLOAD_URL="https://ghfast.top/${DOWNLOAD_URL#https://}"
+
+          # 组装 _site
+          mkdir -p _site
+          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\"}" > _site/version.json
+          cp CNAME _site/
+
+          echo "=== version.json ==="
+          cat _site/version.json
+          echo ""
+          echo "版本: $VERSION"
+          echo "下载: $DOWNLOAD_URL"
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
