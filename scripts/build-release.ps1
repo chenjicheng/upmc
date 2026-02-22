@@ -59,8 +59,8 @@ Copy-Item $ExePath $OutputExe -Force
 
 $size = [math]::Round((Get-Item $OutputExe).Length / 1MB, 2)
 
-# ── 从 Cargo.toml 读取版本号并更新 server.json ──
-Write-Host "[3/3] 更新 server.json 中的 updater_version..." -ForegroundColor Yellow
+# ── 从 Cargo.toml 读取版本号 ──
+Write-Host "[3/3] 读取版本号..." -ForegroundColor Yellow
 
 $CargoToml = Join-Path $UpdaterDir "Cargo.toml"
 $cargoContent = Get-Content $CargoToml -Raw
@@ -69,25 +69,6 @@ if ($cargoContent -match 'version\s*=\s*"([^"]+)"') {
 } else {
     Write-Host "  [错误] 无法从 Cargo.toml 读取版本号" -ForegroundColor Red
     exit 1
-}
-
-$ServerJson = Join-Path $RepoRoot "server.json"
-if (Test-Path $ServerJson) {
-    # 使用正则替换，避免 ConvertFrom-Json/ConvertTo-Json 破坏格式和中文
-    $content = [System.IO.File]::ReadAllText($ServerJson, [System.Text.Encoding]::UTF8)
-
-    if ($content -match '"updater_version"\s*:\s*"[^"]*"') {
-        $content = $content -replace '"updater_version"\s*:\s*"[^"]*"', "`"updater_version`": `"$version`""
-    } else {
-        Write-Host "  [警告] server.json 中找不到 updater_version 字段，请手动添加" -ForegroundColor Yellow
-    }
-
-    # 写入时不添加 BOM
-    [System.IO.File]::WriteAllText($ServerJson, $content, (New-Object System.Text.UTF8Encoding $false))
-    Write-Host "  版本: $version" -ForegroundColor Gray
-    Write-Host "  server.json 已更新" -ForegroundColor Green
-} else {
-    Write-Host "  [警告] server.json 不存在，请手动添加 updater_version: $version" -ForegroundColor Yellow
 }
 
 Write-Host ""
