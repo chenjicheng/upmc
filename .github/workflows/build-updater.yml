@@ -118,8 +118,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 从最新 Release 获取信息
-          RELEASE_JSON=$(gh release view --json tagName,assets)
+          # 从当前 tag 的 Release 获取信息
+          RELEASE_JSON=$(gh release view "${{ github.ref_name }}" --json tagName,assets)
           TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tagName')
           VERSION="${TAG_NAME#v}"
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')

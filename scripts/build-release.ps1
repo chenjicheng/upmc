@@ -14,7 +14,7 @@
 #   1. 修改 updater-rs/Cargo.toml 中的 version
 #   2. 提交后打 tag：git tag v<版本号>
 #   3. 推送 tag：git push origin v<版本号>
-#   4. GitHub Actions 会自动编译、上传到 Releases、更新 server.json
+#   4. GitHub Actions 会自动编译、上传到 Releases、部署 version.json 到 Pages
 #   详见 .github/workflows/build-updater.yml
 # ============================================================
 

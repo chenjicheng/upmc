@@ -95,8 +95,18 @@ pub struct UpdaterVersionInfo {
     pub download_url: String,
 }
 
-/// 从 upmc.chenjicheng.cn 获取更新器版本信息。
+/// 从 upmc.chenjicheng.cn 获取更新器版本信息（带重试）。
 fn fetch_updater_info() -> Result<UpdaterVersionInfo> {
+    retry::with_retry(
+        config::RETRY_MAX_ATTEMPTS,
+        config::RETRY_BASE_DELAY_SECS,
+        "获取更新器版本信息",
+        || fetch_updater_info_inner(),
+    )
+}
+
+/// fetch_updater_info 的内部实现（单次尝试）。
+fn fetch_updater_info_inner() -> Result<UpdaterVersionInfo> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
         .build()

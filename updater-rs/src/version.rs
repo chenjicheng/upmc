@@ -84,11 +84,7 @@ pub struct Downloads {
 
     // 注意：updater_url 和 updater_version 已迁移到独立的 version.json
     // (upmc.chenjicheng.cn/version.json)，由 selfupdate 模块独立获取。
-    // 这两个字段保留以兼容旧版 server.json 反序列化，但不再使用。
-    #[serde(default)]
-    _updater_url: Option<String>,
-    #[serde(default)]
-    _updater_version: Option<String>,
+    // 旧版 server.json 中的这两个字段会被 serde 自动忽略（无 deny_unknown_fields）。
 }
 
 /// 本地已安装的版本信息（保存在 local.json）
