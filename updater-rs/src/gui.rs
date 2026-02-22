@@ -25,19 +25,31 @@ use std::thread;
 use crate::config;
 use crate::update::{self, Progress, UpdateResult};
 
+/// 更新完成后的结果状态。
+///
+/// 用枚举而非多个 bool 标记，编译器会在 match 时强制穷举检查，
+/// 新增状态不会被遗漏。
+#[derive(Debug, Clone)]
+enum FinishState {
+    /// 更新成功，准备启动 PCL2
+    Success,
+    /// 更新器已自更新并重启新进程，当前进程仅需退出
+    SelfUpdateRestarting,
+    /// Java 未安装，显示友好安装指引
+    JavaNotFound,
+    /// 其他错误，显示技术日志
+    Error(String),
+}
+
 /// 共享的进度状态，后台线程写入，GUI 线程读取。
 /// 用 Arc<Mutex<>> 实现线程安全。
 #[derive(Debug, Clone, Default)]
 struct SharedState {
     progress: Progress,
-    finished: bool,
-    error: Option<String>,
     /// 完整日志记录，每一步都追加
     log: Vec<String>,
-    /// 仅退出，不启动 PCL2（自更新重启时使用）
-    exit_only: bool,
-    /// Java 未安装错误，GUI 显示友好提示而非技术日志
-    java_not_found: bool,
+    /// 更新完成后的状态，None 表示尚未完成
+    finish: Option<FinishState>,
 }
 
 /// GUI 窗口定义
@@ -121,11 +133,8 @@ impl UpdaterApp {
                     percent: 0,
                     message: "正在初始化...".to_string(),
                 },
-                finished: false,
-                error: None,
                 log: Vec::new(),
-                exit_only: false,
-                java_not_found: false,
+                finish: None,
             })),
             base_dir: RefCell::new(base_dir),
             ..Default::default()
@@ -145,42 +154,71 @@ impl UpdaterApp {
         let base_dir = app.base_dir.borrow().clone();
 
         thread::spawn(move || {
+            // RAII guard：确保无论正常返回还是 panic，都发送 finish 通知。
+            // 如果后台线程 panic 且未设置 finish，
+            // guard 的 drop 会写入 Error 状态并通知 GUI，避免窗口永久挂起。
+            struct PanicGuard {
+                state: Arc<Mutex<SharedState>>,
+                sender: nwg::NoticeSender,
+                completed: bool,
+            }
+            impl Drop for PanicGuard {
+                fn drop(&mut self) {
+                    if !self.completed {
+                        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        if s.finish.is_none() {
+                            s.log.push("[错误] 更新器内部错误（线程异常退出）".to_string());
+                            s.finish = Some(FinishState::Error(
+                                "更新器内部错误（线程异常退出）".to_string(),
+                            ));
+                        }
+                        drop(s);
+                        self.sender.notice();
+                    }
+                }
+            }
+
+            let mut guard = PanicGuard {
+                state: Arc::clone(&state),
+                sender: notice_sender,
+                completed: false,
+            };
+
             // 执行更新，通过回调报告进度
             let result = update::run_update(&base_dir, &|progress: Progress| {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 // 记录日志
-                s.log.push(format!("[{}%] {}", progress.percent, &progress.message));
+                s.log.push(format!("[{}%] {}", progress.percent, progress.message));
                 s.progress = progress;
+                drop(s); // 先释放锁再通知
                 // 通知 GUI 线程刷新
                 notice_sender.notice();
             });
 
             // 更新完成，标记状态
-            let mut s = state.lock().unwrap();
-            match result {
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            s.finish = Some(match result {
                 Ok(UpdateResult::SelfUpdateRestarting) => {
-                    // 更新器已自更新并重启新进程，当前进程直接退出
                     s.log.push("[重启] 更新器已更新，正在重启...".to_string());
-                    s.finished = true;
-                    // 不设置 error，后续 GUI 判定为成功，
-                    // 但通过 exit_only 标记避免启动 PCL2
-                    s.exit_only = true;
-                    notice_sender.notice();
-                    return;
+                    FinishState::SelfUpdateRestarting
                 }
                 Ok(UpdateResult::Success | UpdateResult::Offline) => {
                     s.log.push("[完成] 更新成功".to_string());
-                    s.finished = true;
+                    FinishState::Success
                 }
                 Err(e) => {
-                    s.java_not_found = e.downcast_ref::<config::JavaNotFound>().is_some();
                     let err_msg = format!("{e:#}");
-                    s.log.push(format!("[错误] {}", &err_msg));
-                    s.error = Some(err_msg);
-                    s.finished = true;
+                    s.log.push(format!("[错误] {err_msg}"));
+                    if e.downcast_ref::<config::JavaNotFound>().is_some() {
+                        FinishState::JavaNotFound
+                    } else {
+                        FinishState::Error(err_msg)
+                    }
                 }
-            }
+            });
+            drop(s); // 先释放锁再通知，避免 GUI 线程等锁
             notice_sender.notice();
+            guard.completed = true;
         });
 
         // 运行 GUI 事件循环（阻塞直到窗口关闭）
@@ -189,51 +227,69 @@ impl UpdaterApp {
 
     /// 后台线程发来进度通知时调用
     fn on_progress_update(&self) {
-        let state = self.shared_state.lock().unwrap();
+        // 使用 lock + unwrap_or_else 处理 mutex poisoning，
+        // 后台线程 panic 时仍然能拿到锁内数据。
+        //
+        // 先复制所有需要的数据再释放锁，最小化临界区。
+        let (percent, message, finish, log_text) = {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let percent = state.progress.percent;
+            let message = state.progress.message.clone();
+            // 用 .take() 取出并置 None，防止多次 notice 导致重复处理
+            let finish = state.finish.take();
+            // 仅在需要日志的分支提取，避免不必要的堆分配
+            let log_text = if matches!(finish, Some(FinishState::Error(_))) {
+                Some(state.log.join("\r\n"))
+            } else {
+                None
+            };
+            (percent, message, finish, log_text)
+        }; // 锁在此处释放
 
         // 更新进度条和状态文本
-        self.progress_bar.set_pos(state.progress.percent);
-        self.status_label.set_text(&state.progress.message);
+        self.progress_bar.set_pos(percent);
+        self.status_label.set_text(&message);
 
-        if state.finished {
-            if let Some(ref error) = state.error {
-                self.progress_bar.set_pos(0);
+        let finish = match finish {
+            Some(f) => f,
+            None => return, // 尚未完成，仅刷新进度
+        };
 
-                let java_not_found = state.java_not_found;
-                let log_text = state.log.join("\r\n");
-                let error_text = error.clone();
-                drop(state); // 释放锁再弹窗（弹窗会阻塞）
-
-                if java_not_found {
-                    // Java 未安装：显示友好提示（下载页已尝试自动打开）
-                    self.status_label.set_text("需要安装 Java");
-                    self.hint_label.set_text("请安装 Java 后重新运行程序");
-                    nwg::modal_info_message(
-                        &self.window,
-                        "需要安装 Java",
-                        &format!(
-                            "未检测到系统 Java 环境。\n\
-                             请安装 Java 后重新运行程序。\n\n\
-                             下载地址（如未自动打开请手动访问）：\n{}",
-                            config::JAVA_DOWNLOAD_URL
-                        ),
-                    );
-                    nwg::stop_thread_dispatch();
-                } else {
-                    // 其他错误：显示错误摘要和可复制的日志窗口
-                    self.status_label
-                        .set_text(&format!("更新失败: {error_text}"));
-                    self.hint_label.set_text("请截图联系管理员");
-                    show_error_log_dialog(&self.window, &log_text);
-                }
-            } else if state.exit_only {
-                // 自更新重启：直接关闭窗口，不启动 PCL2
-                drop(state);
-                nwg::stop_thread_dispatch();
-            } else {
+        match finish {
+            FinishState::Success => {
                 // 成功：启动延迟定时器，1.5秒后打开 PCL2
                 self.hint_label.set_text("即将启动游戏...");
                 self.launch_timer.start();
+            }
+            FinishState::SelfUpdateRestarting => {
+                // 更新器已自更新并重启新进程，直接关闭窗口
+                nwg::stop_thread_dispatch();
+            }
+            FinishState::JavaNotFound => {
+                // Java 未安装：显示友好提示（下载页已尝试自动打开）
+                self.progress_bar.set_pos(0);
+                self.status_label.set_text("需要安装 Java");
+                self.hint_label.set_text("请安装 Java 后重新运行程序");
+                nwg::modal_info_message(
+                    &self.window,
+                    "需要安装 Java",
+                    &format!(
+                        "未检测到系统 Java 环境。\n\
+                         请安装 Java 后重新运行程序。\n\n\
+                         下载地址（如未自动打开请手动访问）：\n{}",
+                        config::JAVA_DOWNLOAD_URL
+                    ),
+                );
+                nwg::stop_thread_dispatch();
+            }
+            FinishState::Error(ref error_text) => {
+                // 其他错误：显示错误摘要和可复制的日志窗口
+                self.progress_bar.set_pos(0);
+                self.status_label
+                    .set_text(&format!("更新失败: {error_text}"));
+                self.hint_label.set_text("请截图联系管理员");
+                show_error_log_dialog(&self.window, log_text.as_deref().unwrap_or(""));
+                nwg::stop_thread_dispatch();
             }
         }
     }
