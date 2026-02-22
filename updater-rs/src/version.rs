@@ -82,15 +82,13 @@ pub struct Downloads {
     #[serde(default)]
     pub settings_url: Option<String>,
 
-    /// 更新器自身的下载地址（.exe）
-    /// 配合 updater_version 实现自动更新更新器本体
+    // 注意：updater_url 和 updater_version 已迁移到独立的 version.json
+    // (upmc.chenjicheng.cn/version.json)，由 selfupdate 模块独立获取。
+    // 这两个字段保留以兼容旧版 server.json 反序列化，但不再使用。
     #[serde(default)]
-    pub updater_url: Option<String>,
-
-    /// 更新器的最新版本号（语义化版本，如 "0.2.0"）
-    /// 与当前 exe 内嵌版本对比，远程版本更高时触发自更新
+    _updater_url: Option<String>,
     #[serde(default)]
-    pub updater_version: Option<String>,
+    _updater_version: Option<String>,
 }
 
 /// 本地已安装的版本信息（保存在 local.json）

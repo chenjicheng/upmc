@@ -62,9 +62,28 @@ pub fn run_update(
     on_progress: &dyn Fn(Progress),
 ) -> Result<UpdateResult> {
     // ─────────────────────────────────────────────
+    // 阶段 -1: 检查更新器自身是否需要更新（独立于整合包服务器）
+    // ─────────────────────────────────────────────
+    on_progress(Progress::new(1, "检查更新器版本..."));
+
+    match selfupdate::check_and_update(on_progress) {
+        Ok(selfupdate::SelfUpdateResult::Restarting) => {
+            // 新版已下载并启动，当前进程应直接退出（不启动 PCL2）
+            return Ok(UpdateResult::SelfUpdateRestarting);
+        }
+        Ok(selfupdate::SelfUpdateResult::UpToDate) => {
+            // 不需要更新，继续
+        }
+        Err(e) => {
+            // 自更新失败不阻塞，记录日志继续
+            eprintln!("自更新检查失败（不影响正常使用）: {e:#}");
+        }
+    }
+
+    // ─────────────────────────────────────────────
     // 阶段 0+1: 拉取远程版本 + 首次安装
     // ─────────────────────────────────────────────
-    on_progress(Progress::new(1, "正在连接更新服务器..."));
+    on_progress(Progress::new(12, "正在连接更新服务器..."));
 
     // 尝试拉取远程版本信息
     let remote = match version::fetch_remote_version() {
@@ -85,27 +104,6 @@ pub fn run_update(
             );
         }
     };
-
-    // ─────────────────────────────────────────────
-    // 阶段 -1: 检查更新器自身是否需要更新
-    // ─────────────────────────────────────────────
-    match selfupdate::check_and_update(
-        remote.downloads.updater_url.as_deref(),
-        remote.downloads.updater_version.as_deref(),
-        on_progress,
-    ) {
-        Ok(selfupdate::SelfUpdateResult::Restarting) => {
-            // 新版已下载并启动，当前进程应直接退出（不启动 PCL2）
-            return Ok(UpdateResult::SelfUpdateRestarting);
-        }
-        Ok(selfupdate::SelfUpdateResult::UpToDate) => {
-            // 不需要更新，继续
-        }
-        Err(e) => {
-            // 自更新失败不阻塞，记录日志继续
-            eprintln!("自更新检查失败（不影响正常使用）: {e:#}");
-        }
-    }
 
     // ─────────────────────────────────────────────
     // 阶段 0: 首次安装自举（如果需要）

@@ -3,7 +3,7 @@
 // ============================================================
 // 负责：
 //   1. 读取当前 exe 内嵌的版本号
-//   2. 对比远程 server.json 中的 updater_version
+//   2. 从 upmc.chenjicheng.cn/version.json 获取最新版本和下载链接
 //   3. 如果远程版本更高，下载新 exe → 委托 PowerShell 替换并重启
 //   4. 清理残留临时文件
 //
@@ -15,6 +15,7 @@
 // ============================================================
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::fs;
 use std::io::Read;
 use std::os::windows::process::CommandExt;
@@ -85,22 +86,49 @@ fn is_remote_newer(current: &str, remote: &str) -> bool {
     }
 }
 
+/// 更新器远程版本信息（从 upmc.chenjicheng.cn/version.json 获取）
+#[derive(Debug, Deserialize)]
+pub struct UpdaterVersionInfo {
+    /// 最新版本号，如 "0.3.5"
+    pub version: String,
+    /// exe 下载地址（经 ghfast 代理）
+    pub download_url: String,
+}
+
+/// 从 upmc.chenjicheng.cn 获取更新器版本信息。
+fn fetch_updater_info() -> Result<UpdaterVersionInfo> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
+        .build()
+        .into();
+
+    let body = agent
+        .get(config::UPDATER_VERSION_URL)
+        .call()
+        .context("无法连接到更新器版本服务器")?;
+
+    let text = body
+        .into_body()
+        .read_to_string()
+        .context("读取版本信息失败")?;
+
+    serde_json::from_str(&text).context("解析 version.json 失败")
+}
+
 /// 检查并执行自更新。
 ///
-/// 通过比较内嵌版本号与远程 updater_version 判断是否需要更新。
+/// 独立从 upmc.chenjicheng.cn/version.json 获取最新版本和下载链接，
+/// 与 server.json 完全解耦。
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
-    updater_url: Option<&str>,
-    updater_version: Option<&str>,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
-    // 如果没有配置自更新 URL 或版本号，或为空字符串，跳过
-    let (url, remote_version) = match (updater_url, updater_version) {
-        (Some(u), Some(v)) if !u.is_empty() && !v.is_empty() => (u, v),
-        _ => return Ok(SelfUpdateResult::UpToDate),
-    };
-
     on_progress(crate::update::Progress::new(1, "检查更新器版本..."));
+
+    // 从独立的 version.json 获取版本信息
+    let info = fetch_updater_info()?;
+    let url = &info.download_url;
+    let remote_version = &info.version;
 
     // 比较版本号
     if !is_remote_newer(CURRENT_VERSION, remote_version) {

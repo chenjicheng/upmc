@@ -12,9 +12,14 @@ use std::process::Command;
 
 // ── 远程配置 ──
 
-/// 远程 server.json 的 URL（GitHub Pages 托管）
+/// 远程 server.json 的 URL（GitHub Pages 托管，packwiz 仓库）
 pub const REMOTE_SERVER_JSON_URL: &str =
     "https://update.mc.chenjicheng.cn/server.json";
+
+/// 更新器版本信息 URL（GitHub Pages 托管，upmc 仓库）
+/// 返回 JSON: { "version": "x.y.z", "download_url": "..." }
+pub const UPDATER_VERSION_URL: &str =
+    "https://upmc.chenjicheng.cn/version.json";
 
 // ── 本地路径（相对于安装基准目录） ──
 
