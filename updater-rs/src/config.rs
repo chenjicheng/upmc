@@ -94,8 +94,6 @@ Logo=我的服务器\r\n\
 LogoSub=专属启动器\r\n\
 ; 不隔离版本，使用 .minecraft 作为游戏目录\r\n\
 VersionArgumentIndie=1\r\n\
-; 隐藏下载页面\r\n\
-HiddenPageDownload=True\r\n\
 ; 默认游戏窗口大小 720p\r\n\
 LaunchArgumentWindowWidth=1280\r\n\
 LaunchArgumentWindowHeight=720\r\n\
