@@ -121,6 +121,11 @@ hash = "ab6def9d98d3f5bf12f78845bdb770a19d5ca590c571e60184e537ffa14dcbee"
 metafile = true
 
 [[files]]
+file = "mods/quickshulker.pw.toml"
+hash = "ae89a8df5b8c28e155d6509acc4a420a4eab124a3e8f00d487a3da35c50ff67d"
+metafile = true
+
+[[files]]
 file = "mods/sodium.pw.toml"
 hash = "9d340481c374a20067d1748c1a4991626bce9d7812f0bdb96072cd7a15d35462"
 metafile = true
