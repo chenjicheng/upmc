@@ -5,10 +5,11 @@
 #
 # 流程：
 #   1. 从 packwiz/ 和 server.json 组装部署内容
-#   2. 部署到 GitHub Pages
+#   2. 推送到 gh-pages 分支，由 GitHub Pages 自动部署
 #
 # 前提：
-#   - 仓库 Settings → Pages → Source 选择 "GitHub Actions"
+#   - 仓库 Settings → Pages → Source 选择 "Deploy from a branch"
+#   - Branch 选择 "gh-pages"，目录选择 "/ (root)"
 # ============================================================
 
 name: 发布整合包索引
@@ -23,11 +24,8 @@ on:
   # 允许手动触发（Actions 页面点 "Run workflow"）
   workflow_dispatch:
 
-# 设置 Pages 部署权限
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 # 同一时间只允许一个部署，跳过排队中的
 concurrency:
@@ -37,10 +35,6 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: 检出代码
@@ -58,17 +52,18 @@ jobs:
           # 复制 server.json
           cp server.json _site/
 
+          # 添加 .nojekyll 避免 GitHub Pages 忽略以 _ 开头的文件
+          touch _site/.nojekyll
+
           echo "=== 部署内容 ==="
           find _site -type f | head -50
 
-      - name: 配置 Pages
-        uses: actions/configure-pages@v5
-
-      - name: 上传 Pages 产物
-        uses: actions/upload-pages-artifact@v3
+      - name: 部署到 gh-pages 分支
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: _site
-
-      - name: 部署到 GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./_site
+          publish_branch: gh-pages
+          force_orphan: true
+          commit_message: "deploy: ${{ github.sha }}"
+          cname: update.mc.chenjicheng.cn
