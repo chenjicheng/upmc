@@ -12,7 +12,7 @@
 #   4. 切回 dev 继续开发
 #
 # 前提：
-#   - GitHub 仓库已启用 Pages (Source: Deploy from branch → gh-pages)
+#   - GitHub 仓库已启用 Pages (Source: GitHub Actions)
 #   - .github/workflows/publish.yml 已配置
 # ============================================================
 
@@ -41,7 +41,6 @@ if (-not (Test-Path $ServerJson)) {
 }
 
 Push-Location $RepoRoot
-$currentBranch = git branch --show-current
 try {
     # 确保工作区干净
     $dirty = git status --porcelain
@@ -59,6 +58,8 @@ try {
         git push
     } else {
         # dev → main 合并流程
+        $currentBranch = git branch --show-current
+
         Write-Host "[2/3] 合并 $currentBranch → main..." -ForegroundColor Yellow
         git checkout main
         git merge $currentBranch -m "merge: $currentBranch → main ($Message)"
@@ -74,10 +75,5 @@ try {
     Write-Host "部署状态: https://github.com/chenjicheng/upmc/actions" -ForegroundColor Gray
 }
 finally {
-    # 确保切回开发分支（合并失败时可能停留在 main）
-    if (-not $Direct -and $currentBranch -and (git branch --show-current) -ne $currentBranch) {
-        Write-Host "正在切回 $currentBranch ..." -ForegroundColor Yellow
-        git checkout $currentBranch 2>$null
-    }
     Pop-Location
 }
