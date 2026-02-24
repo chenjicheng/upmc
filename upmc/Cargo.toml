@@ -1,5 +1,5 @@
 [package]
-name = "upmc-updater"
+name = "upmc"
 version = "0.3.8"
 edition = "2024"
 

@@ -14,7 +14,7 @@
 #
 # 前提：
 #   - GitHub Releases 中已存在名为 "tools" 的 Release
-#   - tag 版本号与 updater-rs/Cargo.toml 中的 version 一致
+#   - tag 版本号与 upmc/Cargo.toml 中的 version 一致
 #   - 仓库 Settings → Pages → Source 选择 "Deploy from a branch" → gh-pages
 #   - DNS: upmc.chenjicheng.cn CNAME → <username>.github.io
 # ============================================================
@@ -58,7 +58,7 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           $tagVersion = $env:TAG_NAME.TrimStart("v")
-          $cargoContent = Get-Content updater-rs/Cargo.toml -Raw
+          $cargoContent = Get-Content upmc/Cargo.toml -Raw
           if ($cargoContent -match '(?s)\[package\].*?version\s*=\s*"([^"]+)"') {
             $cargoVersion = $Matches[1]
           } else {
@@ -77,13 +77,13 @@ jobs:
       - name: 缓存 Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: updater-rs -> target
+          workspaces: upmc -> target
           cache-on-failure: true
           # tag 触发时 ref 不是分支，需要固定 key 才能跨 tag 复用缓存
           shared-key: updater-release
 
       - name: 编译 Release
-        working-directory: updater-rs
+        working-directory: upmc
         run: cargo build --release
 
       - name: 上传到 tools Release（向后兼容）
@@ -92,7 +92,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          Copy-Item updater-rs/target/release/upmc-updater.exe updater.exe
+          Copy-Item upmc/target/release/upmc.exe updater.exe
           $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
           Write-Host "产物大小: $size MB"
           gh release upload tools updater.exe --clobber
@@ -119,7 +119,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          Copy-Item updater-rs/target/release/upmc-updater.exe updater.exe
+          Copy-Item upmc/target/release/upmc.exe updater.exe
           $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
           Write-Host "产物大小: $size MB"
           # 创建或更新 dev-latest pre-release
@@ -232,7 +232,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # 读取 Cargo.toml 版本号
-          VERSION=$(grep -m1 'version' _source/updater-rs/Cargo.toml 2>/dev/null | sed 's/.*"\(.*\)".*/\1/' || echo "0.0.0")
+          VERSION=$(grep -m1 'version' _source/upmc/Cargo.toml 2>/dev/null | sed 's/.*"\(.*\)".*/\1/' || echo "0.0.0")
 
           # 获取 dev-latest release 的下载 URL
           RELEASE_JSON=$(gh release view dev-latest --json assets 2>/dev/null || echo '{"assets":[]}')
