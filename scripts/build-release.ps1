@@ -11,7 +11,7 @@
 # 玩家双击后，exe 会自动下载所有依赖组件。
 #
 # 注意：正式发布请使用 CI 自动流程：
-#   1. 修改 updater-rs/Cargo.toml 中的 version
+#   1. 修改 upmc/Cargo.toml 中的 version
 #   2. 提交后打 tag：git tag v<版本号>
 #   3. 推送 tag：git push origin v<版本号>
 #   4. GitHub Actions 会自动编译、上传到 Releases、部署 version.json 到 Pages
@@ -21,7 +21,7 @@
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path $PSScriptRoot -Parent
-$UpdaterDir = Join-Path $RepoRoot "updater-rs"
+$UpdaterDir = Join-Path $RepoRoot "upmc"
 $DistDir = Join-Path $RepoRoot "dist"
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -44,7 +44,7 @@ finally {
     Pop-Location
 }
 
-$ExePath = Join-Path $UpdaterDir "target\release\upmc-updater.exe"
+$ExePath = Join-Path $UpdaterDir "target\release\upmc.exe"
 if (-not (Test-Path $ExePath)) {
     Write-Host "[错误] 找不到编译产物" -ForegroundColor Red
     exit 1
