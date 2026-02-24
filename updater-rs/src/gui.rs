@@ -56,6 +56,14 @@ struct SharedState {
 /// 使用 NwgUi 派生宏自动生成窗口绑定代码。
 #[derive(Default, NwgUi)]
 pub struct UpdaterApp {
+    // ── 嵌入资源（从 exe 加载 winresource 嵌入的图标）──
+    #[nwg_resource]
+    embed: nwg::EmbedResource,
+
+    // ── 应用图标（winresource 默认嵌入 ID 为 1）──
+    #[nwg_resource(source_embed: Some(&data.embed), source_embed_id: 1)]
+    app_icon: nwg::Icon,
+
     // ── 窗口 ──
     #[nwg_control(
         title: "",       // 运行时设置
@@ -63,7 +71,8 @@ pub struct UpdaterApp {
         position: (300, 300),
         flags: "WINDOW|VISIBLE",
         // 居中显示
-        center: true
+        center: true,
+        icon: Some(&data.app_icon)
     )]
     #[nwg_events(OnWindowClose: [UpdaterApp::on_close])]
     window: nwg::Window,
