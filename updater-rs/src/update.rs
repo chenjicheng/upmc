@@ -14,6 +14,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::bootstrap;
+use crate::config::ChannelConfig;
 use crate::fabric;
 use crate::packwiz;
 use crate::selfupdate;
@@ -51,6 +52,7 @@ pub enum UpdateResult {
 ///
 /// # 参数
 /// - `base_dir`: 安装基准目录（用户文档文件夹下的 CJC整合包/）
+/// - `channel_config`: 更新通道配置
 /// - `on_progress`: 进度回调函数，每个阶段都会调用
 ///
 /// # 返回
@@ -59,6 +61,7 @@ pub enum UpdateResult {
 /// - `Err(...)` — 更新过程中出错
 pub fn run_update(
     base_dir: &Path,
+    channel_config: &ChannelConfig,
     on_progress: &dyn Fn(Progress),
 ) -> Result<UpdateResult> {
     // ─────────────────────────────────────────────
@@ -66,7 +69,7 @@ pub fn run_update(
     // ─────────────────────────────────────────────
     on_progress(Progress::new(1, "检查更新器版本..."));
 
-    match selfupdate::check_and_update(on_progress) {
+    match selfupdate::check_and_update(base_dir, channel_config, on_progress) {
         Ok(selfupdate::SelfUpdateResult::Restarting) => {
             // 新版已下载并启动，当前进程应直接退出（不启动 PCL2）
             return Ok(UpdateResult::SelfUpdateRestarting);

@@ -3,8 +3,10 @@
 // ============================================================
 // 负责：
 //   1. 读取当前 exe 内嵌的版本号
-//   2. 从 upmc.chenjicheng.cn/version.json 获取最新版本和下载链接
-//   3. 如果远程版本更高，下载新 exe → 委托 PowerShell 替换并重启
+//   2. 从版本信息 URL 获取最新版本和下载链接
+//      - Stable: upmc.chenjicheng.cn/version.json（语义化版本比较）
+//      - Dev:    upmc.chenjicheng.cn/dev/version.json（build_id 比较）
+//   3. 如果远程版本更高/不同，下载新 exe → 委托 PowerShell 替换并重启
 //   4. 清理残留临时文件
 //
 // 自替换策略（PowerShell 外部脚本）：
@@ -19,10 +21,10 @@ use serde::Deserialize;
 use std::fs;
 use std::io::Read;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::config;
+use crate::config::{self, ChannelConfig, UpdateChannel};
 use crate::retry;
 
 /// 当前更新器版本（编译时从 Cargo.toml 读取）
@@ -86,34 +88,39 @@ fn is_remote_newer(current: &str, remote: &str) -> bool {
     }
 }
 
-/// 更新器远程版本信息（从 upmc.chenjicheng.cn/version.json 获取）
+/// 更新器远程版本信息（从版本信息 URL 获取）
 #[derive(Debug, Deserialize)]
 pub struct UpdaterVersionInfo {
     /// 最新版本号，如 "0.3.5"
     pub version: String,
     /// exe 下载地址（经 ghfast 代理）
     pub download_url: String,
+    /// 构建 ID（7 位 commit SHA），仅 dev 通道使用
+    #[serde(default)]
+    pub build_id: Option<String>,
 }
 
-/// 从 upmc.chenjicheng.cn 获取更新器版本信息（带重试）。
-fn fetch_updater_info() -> Result<UpdaterVersionInfo> {
+/// 从版本信息 URL 获取更新器版本信息（带重试）。
+fn fetch_updater_info(channel: UpdateChannel) -> Result<UpdaterVersionInfo> {
     retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
         config::RETRY_BASE_DELAY_SECS,
         "获取更新器版本信息",
-        || fetch_updater_info_inner(),
+        || fetch_updater_info_inner(channel),
     )
 }
 
 /// fetch_updater_info 的内部实现（单次尝试）。
-fn fetch_updater_info_inner() -> Result<UpdaterVersionInfo> {
+fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo> {
+    let url = config::updater_version_url(channel);
+
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
         .build()
         .into();
 
     let body = agent
-        .get(config::UPDATER_VERSION_URL)
+        .get(url)
         .call()
         .context("无法连接到更新器版本服务器")?;
 
@@ -127,31 +134,64 @@ fn fetch_updater_info_inner() -> Result<UpdaterVersionInfo> {
 
 /// 检查并执行自更新。
 ///
-/// 独立从 upmc.chenjicheng.cn/version.json 获取最新版本和下载链接，
+/// 根据通道从对应的 version.json 获取最新版本和下载链接，
 /// 与 server.json 完全解耦。
+///
+/// - Stable: 使用语义化版本比较
+/// - Dev: 使用 build_id（commit SHA）比较，不同即更新
+///
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
+    base_dir: &Path,
+    channel_config: &ChannelConfig,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
-    on_progress(crate::update::Progress::new(1, "检查更新器版本..."));
+    let channel = channel_config.channel;
+    let channel_label = match channel {
+        UpdateChannel::Stable => "stable",
+        UpdateChannel::Dev => "dev",
+    };
+    on_progress(crate::update::Progress::new(
+        1,
+        format!("检查更新器版本 ({channel_label})..."),
+    ));
 
-    // 从独立的 version.json 获取版本信息
-    let info = fetch_updater_info()?;
+    // 从对应通道的 version.json 获取版本信息
+    let info = fetch_updater_info(channel)?;
     let url = &info.download_url;
-    let remote_version = &info.version;
 
-    // 比较版本号
-    if !is_remote_newer(CURRENT_VERSION, remote_version) {
+    // 根据通道判断是否需要更新
+    let needs_update = match channel {
+        UpdateChannel::Stable => {
+            // 稳定通道：语义化版本比较
+            is_remote_newer(CURRENT_VERSION, &info.version)
+        }
+        UpdateChannel::Dev => {
+            // 开发通道：比较 build_id
+            match (&info.build_id, &channel_config.dev_build_id) {
+                (Some(remote_id), Some(local_id)) => remote_id != local_id,
+                (Some(_), None) => true, // 本地无 build_id，需要更新
+                _ => false,              // 远程无 build_id，跳过
+            }
+        }
+    };
+
+    if !needs_update {
         return Ok(SelfUpdateResult::UpToDate);
     }
 
-    on_progress(crate::update::Progress::new(
-        2,
-        format!(
+    let progress_msg = match channel {
+        UpdateChannel::Stable => format!(
             "发现更新器新版本 {} → {}，正在下载...",
-            CURRENT_VERSION, remote_version
+            CURRENT_VERSION, &info.version
         ),
-    ));
+        UpdateChannel::Dev => {
+            let remote_id = info.build_id.as_deref().unwrap_or("unknown");
+            let local_id = channel_config.dev_build_id.as_deref().unwrap_or("none");
+            format!("发现新的开发构建 {local_id} → {remote_id}，正在下载...")
+        }
+    };
+    on_progress(crate::update::Progress::new(2, progress_msg));
 
     // 下载新 exe 到临时文件
     let exe_path = current_exe_path()?;
@@ -241,6 +281,17 @@ pub fn check_and_update(
     }
 
     on_progress(crate::update::Progress::new(10, "正在准备替换更新器..."));
+
+    // Dev 通道：更新 channel.json 中的 build_id
+    if channel == UpdateChannel::Dev {
+        if let Some(ref new_build_id) = info.build_id {
+            let mut cfg = config::read_channel_config(base_dir);
+            cfg.dev_build_id = Some(new_build_id.clone());
+            if let Err(e) = config::save_channel_config(base_dir, &cfg) {
+                eprintln!("保存 dev build_id 失败: {e:#}");
+            }
+        }
+    }
 
     // ── 委托 PowerShell 完成替换 ──
     //

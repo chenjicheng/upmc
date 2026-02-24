@@ -1,13 +1,15 @@
 // ============================================================
-// config.rs — 配置常量 + Java 查找
+// config.rs — 配置常量 + Java 查找 + 更新通道
 // ============================================================
 // 集中管理所有可配置的路径和 URL。
 // 修改这里的常量即可适配不同服务器。
 // ============================================================
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // ── 远程配置 ──
@@ -16,10 +18,86 @@ use std::process::Command;
 pub const REMOTE_SERVER_JSON_URL: &str =
     "https://update.mc.chenjicheng.cn/server.json";
 
-/// 更新器版本信息 URL（GitHub Pages 托管，upmc 仓库）
+/// 更新器版本信息 URL — 稳定通道（GitHub Pages 托管，upmc 仓库）
 /// 返回 JSON: { "version": "x.y.z", "download_url": "..." }
 pub const UPDATER_VERSION_URL: &str =
     "https://upmc.chenjicheng.cn/version.json";
+
+/// 更新器版本信息 URL — 开发通道
+/// 返回 JSON: { "version": "x.y.z", "download_url": "...", "build_id": "a1b2c3d" }
+pub const UPDATER_DEV_VERSION_URL: &str =
+    "https://upmc.chenjicheng.cn/dev/version.json";
+
+// ── 更新通道 ──
+
+/// 通道配置文件（相对于安装基准目录）
+pub const CHANNEL_CONFIG_FILE: &str = "updater/channel.json";
+
+/// 更新通道
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    /// 稳定通道：跟随正式 Release，使用语义化版本比较
+    Stable,
+    /// 开发通道：跟随 dev 分支最新构建，使用 build_id 比较
+    Dev,
+}
+
+impl Default for UpdateChannel {
+    fn default() -> Self {
+        Self::Stable
+    }
+}
+
+impl std::fmt::Display for UpdateChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stable => write!(f, "stable"),
+            Self::Dev => write!(f, "dev"),
+        }
+    }
+}
+
+/// 通道配置文件内容
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelConfig {
+    /// 当前选择的通道
+    #[serde(default)]
+    pub channel: UpdateChannel,
+
+    /// dev 通道当前安装的构建 ID（7 位 commit SHA）
+    /// 仅 dev 通道使用，用于判断是否需要更新
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_build_id: Option<String>,
+}
+
+/// 读取通道配置。文件不存在时返回默认值（Stable）。
+pub fn read_channel_config(base_dir: &Path) -> ChannelConfig {
+    let path = base_dir.join(CHANNEL_CONFIG_FILE);
+    match fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => ChannelConfig::default(),
+    }
+}
+
+/// 保存通道配置到 channel.json。
+pub fn save_channel_config(base_dir: &Path, config: &ChannelConfig) -> Result<()> {
+    let path = base_dir.join(CHANNEL_CONFIG_FILE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("创建 updater 目录失败")?;
+    }
+    let json = serde_json::to_string_pretty(config).context("序列化通道配置失败")?;
+    fs::write(&path, json).context("写入 channel.json 失败")?;
+    Ok(())
+}
+
+/// 根据通道返回对应的更新器版本信息 URL。
+pub fn updater_version_url(channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::Stable => UPDATER_VERSION_URL,
+        UpdateChannel::Dev => UPDATER_DEV_VERSION_URL,
+    }
+}
 
 // ── 本地路径（相对于安装基准目录） ──
 
@@ -86,8 +164,25 @@ pub fn get_legacy_install_dir() -> PathBuf {
 
 // ── GUI ──
 
-pub fn window_title() -> String {
-    format!("我的服务器 - 更新器 v{}", env!("CARGO_PKG_VERSION"))
+/// 生成窗口标题。
+///
+/// - Stable: `我的服务器 - 更新器 v0.3.6`
+/// - Dev:    `我的服务器 - 更新器 dev-a1b2c3d`（7 位 commit SHA）
+/// - Dev（无 build_id）: `我的服务器 - 更新器 dev`
+pub fn window_title(channel: UpdateChannel, dev_build_id: Option<&str>) -> String {
+    match channel {
+        UpdateChannel::Stable => {
+            format!("我的服务器 - 更新器 v{}", env!("CARGO_PKG_VERSION"))
+        }
+        UpdateChannel::Dev => {
+            if let Some(id) = dev_build_id {
+                let short = if id.len() >= 7 { &id[..7] } else { id };
+                format!("我的服务器 - 更新器 dev-{short}")
+            } else {
+                "我的服务器 - 更新器 dev".to_string()
+            }
+        }
+    }
 }
 
 // ── Windows 进程创建标志 ──

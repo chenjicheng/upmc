@@ -1,20 +1,21 @@
 # ============================================================
 # GitHub Actions: 编译更新器并发布
 # ============================================================
-# 触发条件：推送 v* 格式的 tag（如 v0.3.5）
+# 触发条件：
+#   - 推送 v* 格式的 tag → 编译 + 发布 stable Release + 更新 Pages
+#   - 推送 dev 分支      → 编译 + 上传到 dev-latest Release + 更新 Pages
+#   - 推送 main 分支     → 仅编译（预热 Cargo 缓存）
 #
-# 流程：
-#   1. 校验 tag 版本号与 Cargo.toml 一致
-#   2. 编译 Rust 更新器（Windows Release）
-#   3. 上传 updater.exe 到 tools Release（向后兼容旧版更新器）
-#   4. 为当前 tag 创建正式 GitHub Release + 附带 updater.exe
-#   5. 从最新 Release 动态生成 version.json
-#   6. 部署 version.json 到 GitHub Pages (upmc.chenjicheng.cn)
+# 部署策略：
+#   使用 gh-pages 分支托管 GitHub Pages，增量更新不会互相覆盖：
+#     /version.json       ← stable 通道（tag 触发时更新）
+#     /dev/version.json   ← dev 通道（dev 分支推送时更新）
+#     /CNAME              ← 自定义域名
 #
 # 前提：
 #   - GitHub Releases 中已存在名为 "tools" 的 Release
 #   - tag 版本号与 updater-rs/Cargo.toml 中的 version 一致
-#   - 仓库 Settings → Pages → Source 选择 "GitHub Actions"
+#   - 仓库 Settings → Pages → Source 选择 "Deploy from a branch" → gh-pages
 #   - DNS: upmc.chenjicheng.cn CNAME → <username>.github.io
 # ============================================================
 
@@ -23,17 +24,16 @@ name: 编译更新器
 on:
   push:
     tags: ['v*']
-    # main 分支推送时也运行，用于预热 Cargo 缓存
-    # （tag push 只能读取默认分支或同 tag 的缓存）
-    branches: [main]
+    # main 和 dev 分支推送时也运行
+    # main: 预热 Cargo 缓存（tag push 只能读取默认分支或同 tag 的缓存）
+    # dev: 编译并发布开发版本
+    branches: [main, dev]
 
   # 允许手动触发（Actions 页面点 "Run workflow"）
   workflow_dispatch:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 # 串行执行，避免并发冲突
 concurrency:
@@ -41,6 +41,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ─────────────────────────────────────────────
+  # 编译（所有触发方式共用）
+  # ─────────────────────────────────────────────
   build:
     runs-on: windows-latest
 
@@ -110,20 +113,60 @@ jobs:
             --generate-notes
           Write-Host "已创建 Release $env:TAG_NAME" -ForegroundColor Green
 
-  deploy:
+      - name: 上传到 dev-latest Release
+        if: github.ref == 'refs/heads/dev'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Copy-Item updater-rs/target/release/upmc-updater.exe updater.exe
+          $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
+          Write-Host "产物大小: $size MB"
+          # 创建或更新 dev-latest pre-release
+          gh release view dev-latest 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create dev-latest updater.exe `
+              --prerelease `
+              --title "Dev Build" `
+              --notes "滚动更新的开发版本构建，跟随 dev 分支最新提交。"
+          } else {
+            gh release upload dev-latest updater.exe --clobber
+          }
+          Write-Host "已上传到 dev-latest Release" -ForegroundColor Green
+
+  # ─────────────────────────────────────────────
+  # 部署 stable 通道到 gh-pages（tag 触发）
+  # ─────────────────────────────────────────────
+  deploy-stable:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
-      - name: 检出代码
+      - name: 检出 gh-pages 分支
         uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          # 如果 gh-pages 分支不存在，后面会创建
+          fetch-depth: 0
+        continue-on-error: true
 
-      - name: 生成 version.json
+      - name: 初始化 gh-pages（如果不存在）
+        run: |
+          if [ ! -f CNAME ]; then
+            echo "gh-pages 分支不存在或为空，初始化..."
+            git checkout --orphan gh-pages 2>/dev/null || true
+            git rm -rf . 2>/dev/null || true
+          fi
+
+      - name: 检出主分支的 CNAME
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          path: _source
+          sparse-checkout: CNAME
+
+      - name: 生成 stable version.json
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -134,25 +177,92 @@ jobs:
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
           DOWNLOAD_URL="https://ghfast.top/${DOWNLOAD_URL#https://}"
 
-          # 组装 _site
-          mkdir -p _site
-          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\"}" > _site/version.json
-          cp CNAME _site/
+          # 更新根目录的 version.json（不影响 dev/ 子目录）
+          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\"}" > version.json
+          cp _source/CNAME CNAME 2>/dev/null || true
+          rm -rf _source
 
           echo "=== version.json ==="
-          cat _site/version.json
+          cat version.json
           echo ""
           echo "版本: $VERSION"
           echo "下载: $DOWNLOAD_URL"
 
-      - name: 配置 Pages
-        uses: actions/configure-pages@v5
+      - name: 提交并推送到 gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "无变更" || git commit -m "deploy stable ${{ github.ref_name }}"
+          git push origin gh-pages
 
-      - name: 上传 Pages 产物
-        uses: actions/upload-pages-artifact@v3
+  # ─────────────────────────────────────────────
+  # 部署 dev 通道到 gh-pages（dev 分支触发）
+  # ─────────────────────────────────────────────
+  deploy-dev:
+    needs: build
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出 gh-pages 分支
+        uses: actions/checkout@v4
         with:
-          path: _site
+          ref: gh-pages
+          fetch-depth: 0
+        continue-on-error: true
 
-      - name: 部署到 GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: 初始化 gh-pages（如果不存在）
+        run: |
+          if [ ! -f CNAME ]; then
+            echo "gh-pages 分支不存在或为空，初始化..."
+            git checkout --orphan gh-pages 2>/dev/null || true
+            git rm -rf . 2>/dev/null || true
+          fi
+
+      - name: 检出主分支的 CNAME
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          path: _source
+          sparse-checkout: CNAME
+
+      - name: 生成 dev version.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 读取 Cargo.toml 版本号
+          VERSION=$(grep -m1 'version' _source/updater-rs/Cargo.toml 2>/dev/null | sed 's/.*"\(.*\)".*/\1/' || echo "0.0.0")
+
+          # 获取 dev-latest release 的下载 URL
+          RELEASE_JSON=$(gh release view dev-latest --json assets 2>/dev/null || echo '{"assets":[]}')
+          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
+          if [ -n "$DOWNLOAD_URL" ]; then
+            DOWNLOAD_URL="https://ghfast.top/${DOWNLOAD_URL#https://}"
+          else
+            DOWNLOAD_URL=""
+          fi
+
+          # 7 位 commit 短哈希
+          BUILD_ID="${GITHUB_SHA:0:7}"
+
+          # 写入 dev/version.json（不影响根目录的 stable version.json）
+          mkdir -p dev
+          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\"}" > dev/version.json
+          cp _source/CNAME CNAME 2>/dev/null || true
+          rm -rf _source
+
+          echo "=== dev/version.json ==="
+          cat dev/version.json
+          echo ""
+          echo "版本: $VERSION"
+          echo "构建: $BUILD_ID"
+          echo "下载: $DOWNLOAD_URL"
+
+      - name: 提交并推送到 gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "无变更" || git commit -m "deploy dev build ${GITHUB_SHA:0:7}"
+          git push origin gh-pages

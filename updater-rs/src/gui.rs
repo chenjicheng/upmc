@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::config;
+use crate::config::{self, ChannelConfig};
 use crate::update::{self, Progress, UpdateResult};
 
 /// 更新完成后的结果状态。
@@ -119,7 +119,7 @@ pub struct UpdaterApp {
 
 impl UpdaterApp {
     /// 启动更新器 GUI。这是外部调用的唯一入口。
-    pub fn run(base_dir: PathBuf) {
+    pub fn run(base_dir: PathBuf, channel_config: ChannelConfig) {
         // 初始化 nwg
         nwg::init().expect("初始化 Windows GUI 失败");
 
@@ -143,8 +143,11 @@ impl UpdaterApp {
         // 构建 UI
         let app = UpdaterApp::build_ui(app).expect("构建 UI 失败");
 
-        // 设置窗口标题
-        let title = config::window_title();
+        // 设置窗口标题（根据通道显示不同标题）
+        let title = config::window_title(
+            channel_config.channel,
+            channel_config.dev_build_id.as_deref(),
+        );
         app.window.set_text(&title);
         app.hint_label.set_text("请勿关闭此窗口...");
 
@@ -152,6 +155,7 @@ impl UpdaterApp {
         let state = Arc::clone(&app.shared_state);
         let notice_sender = app.progress_notice.sender();
         let base_dir = app.base_dir.borrow().clone();
+        let channel_config_clone = channel_config;
 
         thread::spawn(move || {
             // RAII guard：确保无论正常返回还是 panic，都发送 finish 通知。
@@ -185,7 +189,7 @@ impl UpdaterApp {
             };
 
             // 执行更新，通过回调报告进度
-            let result = update::run_update(&base_dir, &|progress: Progress| {
+            let result = update::run_update(&base_dir, &channel_config_clone, &|progress: Progress| {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 // 记录日志
                 s.log.push(format!("[{}%] {}", progress.percent, progress.message));

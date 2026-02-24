@@ -2,9 +2,11 @@
 // main.rs — 程序入口
 // ============================================================
 // 职责：
-//   1. 确定安装基准路径（用户文档文件夹），并处理旧位置迁移
-//   2. 隐藏控制台窗口（release 模式下）
-//   3. 启动 GUI
+//   1. 解析命令行参数（--channel dev/stable）
+//   2. 确定安装基准路径（用户文档文件夹），并处理旧位置迁移
+//   3. 读取/持久化更新通道选择
+//   4. 隐藏控制台窗口（release 模式下）
+//   5. 启动 GUI
 // ============================================================
 
 // 在 release 模式下隐藏控制台黑框
@@ -21,6 +23,7 @@ mod selfupdate;
 mod update;
 mod version;
 
+use config::{ChannelConfig, UpdateChannel};
 use std::path::PathBuf;
 
 fn main() {
@@ -31,8 +34,58 @@ fn main() {
     // 如果旧位置有安装，先迁移到新位置
     let base_dir = get_base_dir();
 
+    // 解析命令行参数，确定更新通道
+    let channel_config = resolve_channel(&base_dir);
+
     // 启动 GUI（内部会开后台线程执行更新）
-    gui::UpdaterApp::run(base_dir);
+    gui::UpdaterApp::run(base_dir, channel_config);
+}
+
+/// 解析命令行参数中的 --channel，并与持久化配置合并。
+///
+/// - 指定了 `--channel dev` 或 `--channel stable` → 写入 channel.json 并返回
+/// - 未指定 → 从 channel.json 读取（默认 Stable）
+fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
+    let args: Vec<String> = std::env::args().collect();
+    let mut cli_channel: Option<UpdateChannel> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--channel" {
+            if let Some(val) = args.get(i + 1) {
+                match val.to_lowercase().as_str() {
+                    "dev" => cli_channel = Some(UpdateChannel::Dev),
+                    "stable" => cli_channel = Some(UpdateChannel::Stable),
+                    other => {
+                        eprintln!("未知通道: {other}，使用默认值 stable");
+                    }
+                }
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    match cli_channel {
+        Some(channel) => {
+            // 命令行指定了通道 → 持久化
+            let mut cfg = config::read_channel_config(base_dir);
+            cfg.channel = channel;
+            // 切换到 stable 时清除 dev_build_id
+            if channel == UpdateChannel::Stable {
+                cfg.dev_build_id = None;
+            }
+            if let Err(e) = config::save_channel_config(base_dir, &cfg) {
+                eprintln!("保存通道配置失败: {e:#}");
+            }
+            cfg
+        }
+        None => {
+            // 未指定 → 从配置文件读取
+            config::read_channel_config(base_dir)
+        }
+    }
 }
 
 /// 获取组件安装的基准目录。
