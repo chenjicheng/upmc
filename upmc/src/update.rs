@@ -14,6 +14,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::bootstrap;
+use crate::config;
 use crate::config::ChannelConfig;
 use crate::fabric;
 use crate::packwiz;
@@ -149,6 +150,10 @@ pub fn run_update(
         on_progress(Progress::new(75, "正在清理旧模组..."));
         fabric::clean_mods_dir(base_dir)?;
 
+        // 2c-2. 清除 pack.toml 缓存，强制阶段 3 重新同步
+        let cache_path = base_dir.join(config::PACK_TOML_CACHE_FILE);
+        let _ = std::fs::remove_file(&cache_path);
+
         // 2d. 保存新的本地版本记录
         let new_local = version::LocalVersion {
             mc_version: remote.mc_version.clone(),
@@ -177,11 +182,14 @@ pub fn run_update(
     // ─────────────────────────────────────────────
     // 阶段 3: 同步模组和配置
     // ─────────────────────────────────────────────
-    on_progress(Progress::new(80, "正在同步模组..."));
-
-    packwiz::sync_modpack(base_dir, &remote.pack_url)?;
-
-    on_progress(Progress::new(95, "模组同步完成"));
+    if version::is_pack_changed(base_dir, &remote.pack_toml_raw) {
+        on_progress(Progress::new(80, "正在同步模组..."));
+        packwiz::sync_modpack(base_dir, &remote.pack_url)?;
+        version::save_pack_cache(base_dir, &remote.pack_toml_raw)?;
+        on_progress(Progress::new(95, "模组同步完成"));
+    } else {
+        on_progress(Progress::new(95, "模组已是最新，跳过同步"));
+    }
 
     // 完成
     on_progress(Progress::new(100, "更新完成，正在启动游戏..."));

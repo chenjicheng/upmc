@@ -46,6 +46,9 @@ pub struct RemoteVersion {
 
     /// 下载配置
     pub downloads: Downloads,
+
+    /// pack.toml 原始内容，用于增量同步判断
+    pub pack_toml_raw: String,
 }
 
 /// 首次安装所需的下载 URL 集合。
@@ -151,6 +154,7 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
         version_tag,
         pack_url: server_config.pack_url,
         downloads: server_config.downloads,
+        pack_toml_raw: pack_toml,
     })
 }
 
@@ -266,4 +270,26 @@ pub fn save_local_version(base_dir: &Path, version: &LocalVersion) -> Result<()>
 /// 只要 mc_version 或 fabric_version 任意一个不同，就需要升级。
 pub fn needs_version_upgrade(remote: &RemoteVersion, local: &LocalVersion) -> bool {
     remote.mc_version != local.mc_version || remote.fabric_version != local.fabric_version
+}
+
+/// 判断 pack.toml 是否有变化（用于跳过无变化的 packwiz 同步）。
+///
+/// 对比远程 pack.toml 内容与本地缓存，内容一致则无需同步。
+/// 缓存文件不存在时视为有变化（首次运行或缓存被清除）。
+pub fn is_pack_changed(base_dir: &Path, remote_pack_toml: &str) -> bool {
+    let cache_path = base_dir.join(config::PACK_TOML_CACHE_FILE);
+    match fs::read_to_string(&cache_path) {
+        Ok(cached) => cached != remote_pack_toml,
+        Err(_) => true,
+    }
+}
+
+/// 保存 pack.toml 内容缓存，供下次启动对比。
+pub fn save_pack_cache(base_dir: &Path, pack_toml: &str) -> Result<()> {
+    let cache_path = base_dir.join(config::PACK_TOML_CACHE_FILE);
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).context("创建 updater 目录失败")?;
+    }
+    fs::write(&cache_path, pack_toml).context("写入 pack.toml 缓存失败")?;
+    Ok(())
 }
