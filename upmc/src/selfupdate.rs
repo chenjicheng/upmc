@@ -2,12 +2,15 @@
 // selfupdate.rs — 更新器自更新模块
 // ============================================================
 // 负责：
-//   1. 读取当前 exe 内嵌的版本号
-//   2. 从版本信息 URL 获取最新版本和下载链接
-//      - Stable: upmc.chenjicheng.cn/version.json（语义化版本比较）
-//      - Dev:    upmc.chenjicheng.cn/dev/version.json（build_id 比较）
-//   3. 如果远程版本更高/不同，下载新 exe → 委托 PowerShell 替换并重启
+//   1. 从版本信息 URL 获取最新的 build_id 和下载链接
+//      - Stable: upmc.chenjicheng.cn/version.json
+//      - Dev:    upmc.chenjicheng.cn/dev/version.json
+//   2. 对比编译期硬编码的 build_id（commit SHA）与远程 build_id
+//   3. 如果不同，下载新 exe → 委托 PowerShell 替换并重启
 //   4. 清理残留临时文件
+//
+// 所有通道统一使用 build_id（commit SHA）判断是否需要更新，
+// 不区分通道、不使用 semver 比较，逻辑简单可靠。
 //
 // 自替换策略（PowerShell 外部脚本）：
 //   当前进程下载新 exe → .exe.new
@@ -27,10 +30,7 @@ use std::time::Duration;
 use crate::config::{self, UpdateChannel};
 use crate::retry;
 
-/// 当前更新器版本（编译时从 Cargo.toml 读取）
-const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// 当前构建 ID（CI 编译时注入的 commit SHA 前 7 位）
+/// 当前构建 ID（CI 编译时注入的 commit SHA）
 /// 本地开发时为 None
 const CURRENT_BUILD_ID: Option<&str> = option_env!("UPMC_BUILD_ID");
 
@@ -65,41 +65,12 @@ pub fn cleanup_old_exe() {
     }
 }
 
-/// 解析语义化版本号为 (major, minor, patch) 元组。
-///
-/// 支持格式如 "0.1.0"、"1.2.3"。无法解析时返回 None。
-fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
-    let parts: Vec<&str> = version.trim().split('.').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let major = parts[0].parse::<u64>().ok()?;
-    let minor = parts[1].parse::<u64>().ok()?;
-    let patch = parts[2].parse::<u64>().ok()?;
-    Some((major, minor, patch))
-}
-
-/// 判断远程版本是否比本地版本更高。
-///
-/// 如果任一版本号无法解析，拒绝更新（防止格式错误的版本号触发意外下载）。
-fn is_remote_newer(current: &str, remote: &str) -> bool {
-    match (parse_semver(current), parse_semver(remote)) {
-        (Some(cur), Some(rem)) => rem > cur,
-        _ => {
-            eprintln!("版本号解析失败，跳过自更新 (current={current:?}, remote={remote:?})");
-            false
-        }
-    }
-}
-
 /// 更新器远程版本信息（从版本信息 URL 获取）
 #[derive(Debug, Deserialize)]
 pub struct UpdaterVersionInfo {
-    /// 最新版本号，如 "0.3.5"
-    pub version: String,
     /// exe 下载地址（经 gh.cjcx.org 代理）
     pub download_url: String,
-    /// 构建 ID（7 位 commit SHA），仅 dev 通道使用
+    /// 构建 ID（commit SHA），所有通道统一使用
     #[serde(default)]
     pub build_id: Option<String>,
 }
@@ -138,66 +109,44 @@ fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo
 
 /// 检查并执行自更新。
 ///
-/// 根据通道从对应的 version.json 获取最新版本和下载链接，
-/// 与 server.json 完全解耦。
-///
-/// - Stable: 使用语义化版本比较
-/// - Dev: 使用 build_id（commit SHA）比较，不同即更新
+/// 所有通道统一使用 build_id（commit SHA）判断是否需要更新：
+///   本地 build_id != 远程 build_id → 需要更新
 ///
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
     channel: UpdateChannel,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
-    let channel_label = match channel {
-        UpdateChannel::Stable => "stable",
-        UpdateChannel::Dev => "dev",
-    };
     on_progress(crate::update::Progress::new(
         1,
-        format!("检查更新器版本 ({channel_label})..."),
+        format!("检查更新器版本 ({channel})..."),
     ));
 
     // 从对应通道的 version.json 获取版本信息
     let info = fetch_updater_info(channel)?;
-    let url = &info.download_url;
 
-    // 根据通道判断是否需要更新
-    let needs_update = match channel {
-        UpdateChannel::Stable => {
-            // 稳定通道：语义化版本比较
-            is_remote_newer(CURRENT_VERSION, &info.version)
-        }
-        UpdateChannel::Dev => {
-            // 开发通道：比较编译时硬编码的 build_id 与远程 build_id
-            match (&info.build_id, CURRENT_BUILD_ID) {
-                (Some(remote_id), Some(local_id)) => remote_id != local_id,
-                (Some(_), None) => true, // 本地无 build_id（非 CI 构建），需要更新
-                _ => false,              // 远程无 build_id，跳过
-            }
-        }
+    // 统一用 build_id 判断是否需要更新
+    let needs_update = match (&info.build_id, CURRENT_BUILD_ID) {
+        (Some(remote_id), Some(local_id)) => remote_id != local_id,
+        (Some(_), None) => true, // 本地无 build_id（非 CI 构建），需要更新
+        _ => false,              // 远程无 build_id，跳过
     };
 
     if !needs_update {
         return Ok(SelfUpdateResult::UpToDate);
     }
 
-    let progress_msg = match channel {
-        UpdateChannel::Stable => format!(
-            "发现更新器新版本 {} → {}，正在下载...",
-            CURRENT_VERSION, &info.version
-        ),
-        UpdateChannel::Dev => {
-            let remote_id = info.build_id.as_deref().unwrap_or("unknown");
-            let local_id = CURRENT_BUILD_ID.unwrap_or("none");
-            format!("发现新的开发构建 {local_id} → {remote_id}，正在下载...")
-        }
-    };
-    on_progress(crate::update::Progress::new(2, progress_msg));
+    let local_id = CURRENT_BUILD_ID.unwrap_or("local");
+    let remote_id = info.build_id.as_deref().unwrap_or("unknown");
+    on_progress(crate::update::Progress::new(
+        2,
+        format!("发现新版本 {local_id} → {remote_id}，正在下载..."),
+    ));
 
     // 下载新 exe 到临时文件
     let exe_path = current_exe_path()?;
     let temp_path = exe_path.with_extension("exe.new");
+    let download_url = &info.download_url;
 
     // 清理上次可能残留的临时文件
     if temp_path.exists() {
@@ -212,7 +161,7 @@ pub fn check_and_update(
             .into();
 
         let response = agent
-            .get(url)
+            .get(download_url)
             .call()
             .context("下载更新器新版本失败")?;
 
