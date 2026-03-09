@@ -70,7 +70,7 @@ pub fn run_update(
     // ─────────────────────────────────────────────
     on_progress(Progress::new(1, "检查更新器版本..."));
 
-    match selfupdate::check_and_update(channel_config, on_progress) {
+    match selfupdate::check_and_update(channel_config.channel, on_progress) {
         Ok(selfupdate::SelfUpdateResult::Restarting) => {
             // 新版已下载并启动，当前进程应直接退出（不启动 PCL2）
             return Ok(UpdateResult::SelfUpdateRestarting);

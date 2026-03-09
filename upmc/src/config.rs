@@ -59,16 +59,14 @@ impl std::fmt::Display for UpdateChannel {
 }
 
 /// 通道配置文件内容
+///
+/// 注意：旧版 channel.json 可能含有 `dev_build_id` 字段，
+/// 由于未启用 `deny_unknown_fields`，serde 会自动忽略。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelConfig {
     /// 当前选择的通道
     #[serde(default)]
     pub channel: UpdateChannel,
-
-    /// dev 通道当前安装的构建 ID（7 位 commit SHA）
-    /// 仅 dev 通道使用，用于判断是否需要更新
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dev_build_id: Option<String>,
 }
 
 /// 读取通道配置。文件不存在时返回默认值（Stable）。

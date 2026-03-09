@@ -24,7 +24,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::{self, ChannelConfig, UpdateChannel};
+use crate::config::{self, UpdateChannel};
 use crate::retry;
 
 /// 当前更新器版本（编译时从 Cargo.toml 读取）
@@ -146,10 +146,9 @@ fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo
 ///
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
-    channel_config: &ChannelConfig,
+    channel: UpdateChannel,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
-    let channel = channel_config.channel;
     let channel_label = match channel {
         UpdateChannel::Stable => "stable",
         UpdateChannel::Dev => "dev",
@@ -190,7 +189,7 @@ pub fn check_and_update(
         ),
         UpdateChannel::Dev => {
             let remote_id = info.build_id.as_deref().unwrap_or("unknown");
-            let local_id = channel_config.dev_build_id.as_deref().unwrap_or("none");
+            let local_id = CURRENT_BUILD_ID.unwrap_or("none");
             format!("发现新的开发构建 {local_id} → {remote_id}，正在下载...")
         }
     };
