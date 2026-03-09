@@ -153,10 +153,7 @@ impl UpdaterApp {
         let app = UpdaterApp::build_ui(app).expect("构建 UI 失败");
 
         // 设置窗口标题（根据通道显示不同标题）
-        let title = config::window_title(
-            channel_config.channel,
-            channel_config.dev_build_id.as_deref(),
-        );
+        let title = config::window_title(channel_config.channel);
         app.window.set_text(&title);
         app.hint_label.set_text("请勿关闭此窗口...");
 

@@ -4,6 +4,7 @@
 // 在编译时运行，用于：
 //   1. 嵌入应用图标 (.ico) 到 exe 文件
 //   2. 设置 exe 的版本信息（右键属性可见）
+//   3. 传递 UPMC_BUILD_ID 环境变量供 option_env!() 使用
 //
 // 依赖 winresource crate。
 // ============================================================
@@ -36,5 +37,12 @@ fn main() {
 
         // 编译资源
         res.compile().expect("编译 Windows 资源失败");
+    }
+
+    // 将 UPMC_BUILD_ID 环境变量传递给 rustc，供 option_env!() 使用
+    // CI 中设置为 commit SHA 前 7 位，本地开发时不设置则为 None
+    println!("cargo:rerun-if-env-changed=UPMC_BUILD_ID");
+    if let Ok(build_id) = std::env::var("UPMC_BUILD_ID") {
+        println!("cargo:rustc-env=UPMC_BUILD_ID={build_id}");
     }
 }
