@@ -175,7 +175,7 @@ jobs:
           TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tagName')
           VERSION="${TAG_NAME#v}"
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
-          DOWNLOAD_URL="https://ghfast.top/${DOWNLOAD_URL#https://}"
+          DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL#https://}"
 
           # 更新根目录的 version.json（不影响 dev/ 子目录）
           echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\"}" > version.json
@@ -238,7 +238,7 @@ jobs:
           RELEASE_JSON=$(gh release view dev-latest --json assets 2>/dev/null || echo '{"assets":[]}')
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
           if [ -n "$DOWNLOAD_URL" ]; then
-            DOWNLOAD_URL="https://ghfast.top/${DOWNLOAD_URL#https://}"
+            DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL#https://}"
           else
             DOWNLOAD_URL=""
           fi

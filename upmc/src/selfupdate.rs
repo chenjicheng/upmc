@@ -93,7 +93,7 @@ fn is_remote_newer(current: &str, remote: &str) -> bool {
 pub struct UpdaterVersionInfo {
     /// 最新版本号，如 "0.3.5"
     pub version: String,
-    /// exe 下载地址（经 ghfast 代理）
+    /// exe 下载地址（经 gh.cjcx.org 代理）
     pub download_url: String,
     /// 构建 ID（7 位 commit SHA），仅 dev 通道使用
     #[serde(default)]
