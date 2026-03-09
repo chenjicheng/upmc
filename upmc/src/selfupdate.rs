@@ -21,7 +21,7 @@ use serde::Deserialize;
 use std::fs;
 use std::io::Read;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::{self, ChannelConfig, UpdateChannel};
@@ -146,7 +146,6 @@ fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo
 ///
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
-    _base_dir: &Path,
     channel_config: &ChannelConfig,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
