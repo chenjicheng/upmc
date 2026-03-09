@@ -86,6 +86,7 @@ jobs:
         working-directory: upmc
         env:
           UPMC_BUILD_ID: ${{ github.sha }}
+          UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
         run: cargo build --release
 
       - name: 上传到 tools Release（向后兼容）

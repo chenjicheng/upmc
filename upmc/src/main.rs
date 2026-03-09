@@ -41,10 +41,12 @@ fn main() {
     gui::UpdaterApp::run(base_dir, channel_config);
 }
 
-/// 解析命令行参数中的 --channel，并与持久化配置合并。
+/// 解析命令行参数中的 --channel，确定更新通道。
 ///
-/// - 指定了 `--channel dev` 或 `--channel stable` → 写入 channel.json 并返回
-/// - 未指定 → 从 channel.json 读取（默认 Stable）
+/// 优先级：命令行参数 > 编译期默认值
+///
+/// 通道由编译时 UPMC_CHANNEL 环境变量决定（CI 注入），
+/// 命令行 `--channel dev/stable` 可临时覆盖。
 fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
     let args: Vec<String> = std::env::args().collect();
     let mut cli_channel: Option<UpdateChannel> = None;
@@ -57,7 +59,7 @@ fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
                     "dev" => cli_channel = Some(UpdateChannel::Dev),
                     "stable" => cli_channel = Some(UpdateChannel::Stable),
                     other => {
-                        eprintln!("未知通道: {other}，使用默认值 stable");
+                        eprintln!("未知通道: {other}，使用编译期默认值");
                     }
                 }
                 i += 2;
@@ -67,21 +69,14 @@ fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
         i += 1;
     }
 
-    match cli_channel {
-        Some(channel) => {
-            // 命令行指定了通道 → 持久化
-            let mut cfg = config::read_channel_config(base_dir);
-            cfg.channel = channel;
-            if let Err(e) = config::save_channel_config(base_dir, &cfg) {
-                eprintln!("保存通道配置失败: {e:#}");
-            }
-            cfg
-        }
-        None => {
-            // 未指定 → 从配置文件读取
-            config::read_channel_config(base_dir)
-        }
+    let channel = cli_channel.unwrap_or(UpdateChannel::COMPILED_DEFAULT);
+
+    // 保存到 channel.json（向后兼容，供外部工具读取通道信息）
+    let cfg = ChannelConfig { channel };
+    if let Err(e) = config::save_channel_config(base_dir, &cfg) {
+        eprintln!("保存通道配置失败: {e:#}");
     }
+    cfg
 }
 
 /// 获取组件安装的基准目录。
