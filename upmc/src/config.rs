@@ -102,6 +102,7 @@ pub fn updater_version_url(channel: UpdateChannel) -> &'static str {
 // ── 本地路径（相对于安装基准目录） ──
 
 pub const LOCAL_VERSION_FILE: &str = "updater/local.json";
+pub const PACK_TOML_CACHE_FILE: &str = "updater/pack_toml_cache.txt";
 pub const PACKWIZ_BOOTSTRAP_JAR: &str = "updater/packwiz-installer-bootstrap.jar";
 pub const FABRIC_INSTALLER_JAR: &str = "updater/fabric-installer.jar";
 pub const MINECRAFT_DIR: &str = ".minecraft";
