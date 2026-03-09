@@ -72,10 +72,6 @@ fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
             // 命令行指定了通道 → 持久化
             let mut cfg = config::read_channel_config(base_dir);
             cfg.channel = channel;
-            // 切换到 stable 时清除 dev_build_id
-            if channel == UpdateChannel::Stable {
-                cfg.dev_build_id = None;
-            }
             if let Err(e) = config::save_channel_config(base_dir, &cfg) {
                 eprintln!("保存通道配置失败: {e:#}");
             }
