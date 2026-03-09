@@ -30,6 +30,10 @@ use crate::retry;
 /// 当前更新器版本（编译时从 Cargo.toml 读取）
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// 当前构建 ID（CI 编译时注入的 commit SHA 前 7 位）
+/// 本地开发时为 None
+const CURRENT_BUILD_ID: Option<&str> = option_env!("UPMC_BUILD_ID");
+
 /// 自更新检查结果
 pub enum SelfUpdateResult {
     /// 无需更新，继续正常流程
@@ -142,7 +146,7 @@ fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo
 ///
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
-    base_dir: &Path,
+    _base_dir: &Path,
     channel_config: &ChannelConfig,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
@@ -167,10 +171,10 @@ pub fn check_and_update(
             is_remote_newer(CURRENT_VERSION, &info.version)
         }
         UpdateChannel::Dev => {
-            // 开发通道：比较 build_id
-            match (&info.build_id, &channel_config.dev_build_id) {
+            // 开发通道：比较编译时硬编码的 build_id 与远程 build_id
+            match (&info.build_id, CURRENT_BUILD_ID) {
                 (Some(remote_id), Some(local_id)) => remote_id != local_id,
-                (Some(_), None) => true, // 本地无 build_id，需要更新
+                (Some(_), None) => true, // 本地无 build_id（非 CI 构建），需要更新
                 _ => false,              // 远程无 build_id，跳过
             }
         }
@@ -281,17 +285,6 @@ pub fn check_and_update(
     }
 
     on_progress(crate::update::Progress::new(10, "正在准备替换更新器..."));
-
-    // Dev 通道：更新 channel.json 中的 build_id
-    if channel == UpdateChannel::Dev {
-        if let Some(ref new_build_id) = info.build_id {
-            let mut cfg = config::read_channel_config(base_dir);
-            cfg.dev_build_id = Some(new_build_id.clone());
-            if let Err(e) = config::save_channel_config(base_dir, &cfg) {
-                eprintln!("保存 dev build_id 失败: {e:#}");
-            }
-        }
-    }
 
     // ── 委托 PowerShell 完成替换 ──
     //

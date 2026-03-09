@@ -170,13 +170,13 @@ pub fn get_legacy_install_dir() -> PathBuf {
 /// - Stable: `我的服务器 - 更新器 v0.3.6`
 /// - Dev:    `我的服务器 - 更新器 dev-a1b2c3d`（7 位 commit SHA）
 /// - Dev（无 build_id）: `我的服务器 - 更新器 dev`
-pub fn window_title(channel: UpdateChannel, dev_build_id: Option<&str>) -> String {
+pub fn window_title(channel: UpdateChannel) -> String {
     match channel {
         UpdateChannel::Stable => {
             format!("我的服务器 - 更新器 v{}", env!("CARGO_PKG_VERSION"))
         }
         UpdateChannel::Dev => {
-            if let Some(id) = dev_build_id {
+            if let Some(id) = option_env!("UPMC_BUILD_ID") {
                 let short = if id.len() >= 7 { &id[..7] } else { id };
                 format!("我的服务器 - 更新器 dev-{short}")
             } else {
