@@ -43,9 +43,18 @@ pub enum UpdateChannel {
     Dev,
 }
 
+impl UpdateChannel {
+    /// 编译时确定的默认通道。
+    /// CI 通过 UPMC_CHANNEL 环境变量注入（stable/dev），本地构建默认 stable。
+    pub const COMPILED_DEFAULT: Self = match env!("UPMC_CHANNEL").as_bytes() {
+        b"dev" => Self::Dev,
+        _ => Self::Stable,
+    };
+}
+
 impl Default for UpdateChannel {
     fn default() -> Self {
-        Self::Stable
+        Self::COMPILED_DEFAULT
     }
 }
 
@@ -67,15 +76,6 @@ pub struct ChannelConfig {
     /// 当前选择的通道
     #[serde(default)]
     pub channel: UpdateChannel,
-}
-
-/// 读取通道配置。文件不存在时返回默认值（Stable）。
-pub fn read_channel_config(base_dir: &Path) -> ChannelConfig {
-    let path = base_dir.join(CHANNEL_CONFIG_FILE);
-    match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => ChannelConfig::default(),
-    }
 }
 
 /// 保存通道配置到 channel.json。

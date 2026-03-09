@@ -39,10 +39,18 @@ fn main() {
         res.compile().expect("编译 Windows 资源失败");
     }
 
-    // 将 UPMC_BUILD_ID 环境变量传递给 rustc，供 option_env!() 使用
-    // CI 中设置为 commit SHA 前 7 位，本地开发时不设置则为 None
+    // 将环境变量传递给 rustc，供 option_env!() / env!() 使用
+    // CI 中设置，本地开发时不设置则使用默认值
+
+    // UPMC_BUILD_ID: commit SHA，用于 dev 通道版本对比
     println!("cargo:rerun-if-env-changed=UPMC_BUILD_ID");
     if let Ok(build_id) = std::env::var("UPMC_BUILD_ID") {
         println!("cargo:rustc-env=UPMC_BUILD_ID={build_id}");
     }
+
+    // UPMC_CHANNEL: 构建通道（stable/dev），决定默认更新通道
+    // 未设置时默认 stable
+    println!("cargo:rerun-if-env-changed=UPMC_CHANNEL");
+    let channel = std::env::var("UPMC_CHANNEL").unwrap_or_else(|_| "stable".to_string());
+    println!("cargo:rustc-env=UPMC_CHANNEL={channel}");
 }
