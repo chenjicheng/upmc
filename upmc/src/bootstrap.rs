@@ -227,6 +227,47 @@ fn download_file_inner(
         }
     }
 
+    drop(file);
+
+    // 校验下载文件的完整性
+    validate_downloaded_file(dest)?;
+
+    Ok(())
+}
+
+/// 校验下载的文件格式是否正确。
+///
+/// 通过文件扩展名判断期望格式，检查文件头 magic bytes：
+///   - .exe → PE 文件 (MZ)
+///   - .jar/.zip → ZIP 归档 (PK\x03\x04)
+///
+/// 防止代理服务器返回 HTML 错误页被误存为二进制文件。
+fn validate_downloaded_file(path: &Path) -> Result<()> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let expected_magic: &[u8] = match ext.as_str() {
+        "exe" => b"MZ",
+        "jar" | "zip" => b"PK",
+        _ => return Ok(()), // 未知扩展名不校验
+    };
+
+    let mut f = fs::File::open(path)
+        .with_context(|| format!("打开下载文件失败: {}", path.display()))?;
+    let mut magic = vec![0u8; expected_magic.len()];
+    if f.read_exact(&mut magic).is_err() || magic != expected_magic {
+        // 删除损坏的文件，防止下次启动跳过下载
+        let _ = fs::remove_file(path);
+        bail!(
+            "下载的文件格式无效（可能是代理返回了错误页面）: {}\n\
+             请检查网络连接或代理服务是否正常后重试。",
+            path.display()
+        );
+    }
+
     Ok(())
 }
 
