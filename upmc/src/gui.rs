@@ -388,6 +388,19 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
         .build(&mut text_box)
         .expect("创建文本框失败");
 
+    // 滚动到底部，让用户直接看到最新的错误信息
+    if let Some(hwnd) = text_box.handle.hwnd() {
+        use winapi::um::winuser::{SendMessageW, EM_SETSEL, EM_SCROLLCARET};
+        unsafe {
+            // 将光标移到文本末尾
+            SendMessageW(hwnd, EM_SETSEL as u32, log_text.len(), log_text.len() as isize);
+            // 滚动到光标位置
+            SendMessageW(hwnd, EM_SCROLLCARET as u32, 0, 0);
+            // 取消选中，避免文本被高亮
+            SendMessageW(hwnd, EM_SETSEL as u32, usize::MAX, usize::MAX as isize);
+        }
+    }
+
     // "复制日志" 按钮
     let mut copy_btn = Default::default();
     nwg::Button::builder()
