@@ -176,21 +176,19 @@ jobs:
           # 从当前 tag 的 Release 获取信息
           RELEASE_JSON=$(gh release view "${{ github.ref_name }}" --json tagName,assets)
           TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tagName')
-          VERSION="${TAG_NAME#v}"
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
           DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL}"
 
           BUILD_ID="${GITHUB_SHA}"
 
           # 更新根目录的 version.json（不影响 dev/ 子目录）
-          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\"}" > version.json
+          echo "{\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\"}" > version.json
           cp _source/CNAME CNAME 2>/dev/null || true
           rm -rf _source
 
           echo "=== version.json ==="
           cat version.json
           echo ""
-          echo "版本: $VERSION"
           echo "下载: $DOWNLOAD_URL"
 
       - name: 提交并推送到 gh-pages
@@ -236,9 +234,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 读取 Cargo.toml 版本号
-          VERSION=$(grep -m1 'version' _source/upmc/Cargo.toml 2>/dev/null | sed 's/.*"\(.*\)".*/\1/' || echo "0.0.0")
-
           # 获取 dev-latest release 的下载 URL
           RELEASE_JSON=$(gh release view dev-latest --json assets 2>/dev/null || echo '{"assets":[]}')
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
@@ -248,19 +243,17 @@ jobs:
             DOWNLOAD_URL=""
           fi
 
-          # 7 位 commit 短哈希
           BUILD_ID="${GITHUB_SHA}"
 
           # 写入 dev/version.json（不影响根目录的 stable version.json）
           mkdir -p dev
-          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\"}" > dev/version.json
+          echo "{\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\"}" > dev/version.json
           cp _source/CNAME CNAME 2>/dev/null || true
           rm -rf _source
 
           echo "=== dev/version.json ==="
           cat dev/version.json
           echo ""
-          echo "版本: $VERSION"
           echo "构建: $BUILD_ID"
           echo "下载: $DOWNLOAD_URL"
 

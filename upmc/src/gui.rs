@@ -392,12 +392,10 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
     if let Some(hwnd) = text_box.handle.hwnd() {
         use winapi::um::winuser::{SendMessageW, EM_SETSEL, EM_SCROLLCARET};
         unsafe {
-            // 将光标移到文本末尾
-            SendMessageW(hwnd, EM_SETSEL as u32, log_text.len(), log_text.len() as isize);
-            // 滚动到光标位置
+            // wParam=lParam=-1 将光标移到文本末尾（无需计算字符数）
+            let end = -1isize;
+            SendMessageW(hwnd, EM_SETSEL as u32, end as usize, end);
             SendMessageW(hwnd, EM_SCROLLCARET as u32, 0, 0);
-            // 取消选中，避免文本被高亮
-            SendMessageW(hwnd, EM_SETSEL as u32, usize::MAX, usize::MAX as isize);
         }
     }
 
