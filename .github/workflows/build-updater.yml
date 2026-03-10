@@ -178,7 +178,7 @@ jobs:
           TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tagName')
           VERSION="${TAG_NAME#v}"
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
-          DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL#https://}"
+          DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL}"
 
           BUILD_ID="${GITHUB_SHA}"
 
@@ -243,7 +243,7 @@ jobs:
           RELEASE_JSON=$(gh release view dev-latest --json assets 2>/dev/null || echo '{"assets":[]}')
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
           if [ -n "$DOWNLOAD_URL" ]; then
-            DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL#https://}"
+            DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL}"
           else
             DOWNLOAD_URL=""
           fi
