@@ -210,7 +210,6 @@ pub const RETRY_BASE_DELAY_SECS: u64 = 3;
 /// 关键设置：
 ///   - VersionArgumentIndie=1: 不隔离，使用 .minecraft/ 作为游戏目录
 ///     （packwiz 把 mods/config 等安装到 .minecraft/，必须关闭隔离）
-///   - HiddenPageDownload: 隐藏下载页，防止玩家误操作
 ///
 /// PCL2 会自动检测同目录下的 .minecraft 文件夹，
 /// 无需手动指定游戏目录。
