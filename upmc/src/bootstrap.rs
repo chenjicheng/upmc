@@ -325,3 +325,54 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn validate_valid_exe() {
+        let dir = std::env::temp_dir().join("upmc_test_validate_exe");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.exe");
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(b"MZ\x90\x00").unwrap();
+        drop(f);
+        assert!(validate_downloaded_file(&path).is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_invalid_exe_is_deleted() {
+        let dir = std::env::temp_dir().join("upmc_test_validate_bad_exe");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.exe");
+        fs::write(&path, b"<html>404</html>").unwrap();
+        assert!(validate_downloaded_file(&path).is_err());
+        assert!(!path.exists()); // 损坏文件应被删除
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_valid_jar() {
+        let dir = std::env::temp_dir().join("upmc_test_validate_jar");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.jar");
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(b"PK\x03\x04").unwrap();
+        drop(f);
+        assert!(validate_downloaded_file(&path).is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_unknown_extension_skips() {
+        let dir = std::env::temp_dir().join("upmc_test_validate_txt");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, b"anything").unwrap();
+        assert!(validate_downloaded_file(&path).is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+}
