@@ -192,9 +192,10 @@ jobs:
       - name: 生成 stable version.json
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           # 从当前 tag 的 Release 获取信息
-          RELEASE_JSON=$(gh release view "${{ github.ref_name }}" --json tagName,assets)
+          RELEASE_JSON=$(gh release view "$REF_NAME" --json tagName,assets)
           TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tagName')
           VERSION="${TAG_NAME#v}"
           DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
@@ -216,11 +217,13 @@ jobs:
           echo "SHA256: $SHA256"
 
       - name: 提交并推送到 gh-pages
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet && echo "无变更" || git commit -m "deploy stable ${{ github.ref_name }}"
+          git add version.json CNAME
+          git diff --cached --quiet && echo "无变更" || git commit -m "deploy stable $REF_NAME"
           git push origin gh-pages
 
   # ─────────────────────────────────────────────
@@ -292,6 +295,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add version.json dev/version.json CNAME
           git diff --cached --quiet && echo "无变更" || git commit -m "deploy dev build ${GITHUB_SHA:0:7}"
           git push origin gh-pages
