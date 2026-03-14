@@ -145,6 +145,12 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
     let (mc_version, fabric_version) = parse_pack_toml_versions(&pack_toml)
         .context("从 pack.toml 解析版本信息失败")?;
 
+    // 校验版本字符串不含路径分隔符或遍历序列，防止恶意 pack.toml 写入任意路径
+    validate_version_string(&mc_version)
+        .context("minecraft 版本号包含非法字符")?;
+    validate_version_string(&fabric_version)
+        .context("fabric 版本号包含非法字符")?;
+
     // 3. 合并
     let version_tag = format!("fabric-loader-{fabric_version}-{mc_version}");
 
@@ -156,6 +162,21 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
         downloads: server_config.downloads,
         pack_toml_raw: pack_toml,
     })
+}
+
+/// 校验版本字符串是否安全用于文件路径。
+///
+/// 拒绝包含路径分隔符（`/`、`\`）或遍历序列（`..`）的值，
+/// 防止恶意 pack.toml 导致路径遍历攻击。
+fn validate_version_string(version: &str) -> Result<()> {
+    if version.is_empty()
+        || version.contains('/')
+        || version.contains('\\')
+        || version.contains("..")
+    {
+        anyhow::bail!("版本号 \"{version}\" 包含非法字符");
+    }
+    Ok(())
 }
 
 /// 从 pack.toml 文本中解析 minecraft 和 fabric 版本。
@@ -472,5 +493,31 @@ fabric = "0.15.0" # required
             version_tag: "".into(),
         };
         assert!(!needs_version_upgrade(&remote, &local));
+    }
+
+    // ── validate_version_string ──
+
+    #[test]
+    fn valid_version_strings() {
+        assert!(validate_version_string("1.21.11").is_ok());
+        assert!(validate_version_string("0.18.4").is_ok());
+        assert!(validate_version_string("1.20.4-pre1").is_ok());
+    }
+
+    #[test]
+    fn reject_path_traversal() {
+        assert!(validate_version_string("../../evil").is_err());
+        assert!(validate_version_string("1.21..11").is_err());
+    }
+
+    #[test]
+    fn reject_path_separators() {
+        assert!(validate_version_string("1.21/evil").is_err());
+        assert!(validate_version_string("1.21\\evil").is_err());
+    }
+
+    #[test]
+    fn reject_empty_version() {
+        assert!(validate_version_string("").is_err());
     }
 }
