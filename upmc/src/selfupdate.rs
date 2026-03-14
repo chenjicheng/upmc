@@ -73,6 +73,9 @@ pub struct UpdaterVersionInfo {
     /// 构建 ID（commit SHA），所有通道统一使用
     #[serde(default)]
     pub build_id: Option<String>,
+    /// exe 文件的 SHA256 哈希（小写十六进制），用于下载后完整性校验
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// 从版本信息 URL 获取更新器版本信息（带重试）。
@@ -153,6 +156,9 @@ pub fn check_and_update(
         fs::remove_file(&temp_path).ok();
     }
 
+    // 保存 sha256 供校验使用
+    let expected_sha256 = info.sha256.clone();
+
     // 下载 + 校验：用闭包包裹，出错时统一清理临时文件
     let download_and_verify = || -> Result<()> {
         let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -216,6 +222,21 @@ pub fn check_and_update(
                 anyhow::bail!("下载的文件不是有效的可执行文件");
             }
         }
+
+        // SHA256 校验（version.json 中提供了 sha256 字段时启用）
+        if let Some(ref expected) = expected_sha256 {
+            use sha2::{Sha256, Digest};
+            let file_bytes = fs::read(&temp_path).context("读取下载文件用于校验失败")?;
+            let actual = format!("{:x}", Sha256::digest(&file_bytes));
+            if actual != *expected {
+                anyhow::bail!(
+                    "SHA256 校验失败！文件可能被篡改。\n\
+                     期望: {expected}\n\
+                     实际: {actual}"
+                );
+            }
+        }
+
         Ok(())
     };
 
