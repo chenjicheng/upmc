@@ -116,7 +116,9 @@ fn get_base_dir() -> PathBuf {
 
         // 确保新目录的父目录存在
         if let Some(parent) = new_dir.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("创建目标目录失败: {e}");
+            }
         }
 
         // 尝试 rename（同盘符下是原子操作，速度极快）
