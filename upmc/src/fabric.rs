@@ -179,12 +179,13 @@ pub fn clean_mods_dir(base_dir: &Path) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
 
-        // 只删除 .jar 文件
+        // 只删除 .jar 文件，best-effort（文件可能被游戏进程锁定）
         if path.is_file()
             && path.extension().is_some_and(|ext| ext == "jar")
         {
-            fs::remove_file(&path)
-                .with_context(|| format!("删除模组失败: {}", path.display()))?;
+            if let Err(e) = fs::remove_file(&path) {
+                eprintln!("删除模组失败（已跳过）: {}: {e}", path.display());
+            }
         }
     }
 
