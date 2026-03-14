@@ -145,12 +145,13 @@ pub fn cleanup_old_versions(base_dir: &Path, keep_tag: &str) -> Result<()> {
             None => continue,
         };
 
-        // 仅清理 fabric-loader-* 目录，保留原版和其他手动安装的版本
-        if dir_name == keep_tag || !dir_name.starts_with("fabric-loader-") {
+        // 保留新版本的目录，删除其他
+        if dir_name == keep_tag {
             continue;
         }
 
         // best-effort 清理：单个目录删除失败不阻断更新流程
+        // （文件可能被杀毒软件或资源管理器锁定）
         if let Err(e) = fs::remove_dir_all(&path) {
             eprintln!("清理旧版本目录失败（已跳过）: {dir_name}: {e}");
         }
