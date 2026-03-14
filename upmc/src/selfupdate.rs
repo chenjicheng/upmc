@@ -155,6 +155,11 @@ pub fn check_and_update(
     let temp_path = exe_path.with_extension("exe.new");
     let download_url = &info.download_url;
 
+    // 校验下载 URL 必须使用 HTTPS
+    if !download_url.starts_with("https://") {
+        anyhow::bail!("更新器下载 URL 必须使用 HTTPS 协议: {download_url}");
+    }
+
     // 清理上次可能残留的临时文件
     if temp_path.exists() {
         fs::remove_file(&temp_path).ok();
