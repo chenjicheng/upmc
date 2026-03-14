@@ -34,9 +34,13 @@ pub fn needs_bootstrap(base_dir: &Path) -> bool {
     checks.iter().any(|path| !base_dir.join(path).exists())
 }
 
-/// 检查是否已经完成过首次安装（PCL2 存在即可启动离线模式）
+/// 检查是否已经完成过首次安装。
+///
+/// 多条件检查：PCL2 存在且 local.json 存在（至少完成过一次完整更新）。
+/// 避免仅凭 PCL2 存在就进入离线模式，防止半成品安装跳过更新。
 pub fn is_bootstrapped(base_dir: &Path) -> bool {
     base_dir.join(config::PCL2_EXE).exists()
+        && base_dir.join(config::LOCAL_VERSION_FILE).exists()
 }
 
 /// 执行首次安装流程。
