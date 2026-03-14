@@ -84,3 +84,66 @@ where
         None => bail!("{} 重试逻辑异常", operation_name),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn success_on_first_attempt() {
+        let call_count = Cell::new(0u32);
+        let result = with_retry(3, 1, "test", || {
+            call_count.set(call_count.get() + 1);
+            Ok(42)
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(call_count.get(), 1);
+    }
+
+    #[test]
+    fn success_on_retry() {
+        let call_count = Cell::new(0u32);
+        let result = with_retry(3, 0, "test", || {
+            let n = call_count.get() + 1;
+            call_count.set(n);
+            if n < 3 {
+                bail!("attempt {n} failed");
+            }
+            Ok("ok")
+        });
+        assert_eq!(result.unwrap(), "ok");
+        assert_eq!(call_count.get(), 3);
+    }
+
+    #[test]
+    fn failure_after_all_attempts() {
+        let call_count = Cell::new(0u32);
+        let result: Result<()> = with_retry(2, 0, "download", || {
+            call_count.set(call_count.get() + 1);
+            bail!("network error");
+        });
+        assert!(result.is_err());
+        assert_eq!(call_count.get(), 2);
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("download"));
+        assert!(msg.contains("2"));
+    }
+
+    #[test]
+    fn zero_attempts_returns_error() {
+        let result: Result<()> = with_retry(0, 1, "test", || Ok(()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn single_attempt_no_retry() {
+        let call_count = Cell::new(0u32);
+        let result: Result<()> = with_retry(1, 1, "test", || {
+            call_count.set(call_count.get() + 1);
+            bail!("fail");
+        });
+        assert!(result.is_err());
+        assert_eq!(call_count.get(), 1);
+    }
+}
