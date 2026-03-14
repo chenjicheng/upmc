@@ -55,12 +55,16 @@ pub fn cleanup_old_exe() {
     if let Ok(exe) = current_exe_path() {
         let new = exe.with_extension("exe.new");
         if new.exists() {
-            let _ = fs::remove_file(&new);
+            if let Err(e) = fs::remove_file(&new) {
+                eprintln!("清理残留 .exe.new 失败: {e}");
+            }
         }
         // 兼容旧版自更新策略可能残留的 .old 文件
         let old = exe.with_extension("exe.old");
         if old.exists() {
-            let _ = fs::remove_file(&old);
+            if let Err(e) = fs::remove_file(&old) {
+                eprintln!("清理残留 .exe.old 失败: {e}");
+            }
         }
     }
 }
@@ -223,17 +227,23 @@ pub fn check_and_update(
             }
         }
 
-        // SHA256 校验（version.json 中提供了 sha256 字段时启用）
-        if let Some(ref expected) = expected_sha256 {
-            use sha2::{Sha256, Digest};
-            let file_bytes = fs::read(&temp_path).context("读取下载文件用于校验失败")?;
-            let actual = format!("{:x}", Sha256::digest(&file_bytes));
-            if actual != *expected {
-                anyhow::bail!(
-                    "SHA256 校验失败！文件可能被篡改。\n\
-                     期望: {expected}\n\
-                     实际: {actual}"
-                );
+        // SHA256 校验
+        match &expected_sha256 {
+            Some(expected) => {
+                use sha2::{Sha256, Digest};
+                let file_bytes = fs::read(&temp_path).context("读取下载文件用于校验失败")?;
+                let actual = format!("{:x}", Sha256::digest(&file_bytes));
+                // 统一小写比较，兼容服务端返回大写哈希
+                if actual != expected.to_lowercase() {
+                    anyhow::bail!(
+                        "SHA256 校验失败！文件可能被篡改。\n\
+                         期望: {expected}\n\
+                         实际: {actual}"
+                    );
+                }
+            }
+            None => {
+                eprintln!("[安全警告] version.json 未提供 sha256 字段，跳过完整性校验");
             }
         }
 
