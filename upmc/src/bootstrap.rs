@@ -153,6 +153,10 @@ fn download_file(
     progress_start: u32,
     progress_end: u32,
 ) -> Result<()> {
+    // 校验 URL scheme 为 HTTPS，防止远程配置指向不安全的 HTTP 地址
+    if !url.starts_with("https://") {
+        bail!("下载 URL 必须使用 HTTPS 协议: {url}");
+    }
     let url_owned = url.to_string();
     let dest_owned = dest.to_path_buf();
 
