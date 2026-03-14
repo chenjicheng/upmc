@@ -51,6 +51,8 @@ fn main() {
     // UPMC_CHANNEL: 构建通道（stable/dev），决定默认更新通道
     // 未设置时默认 stable
     println!("cargo:rerun-if-env-changed=UPMC_CHANNEL");
-    let channel = std::env::var("UPMC_CHANNEL").unwrap_or_else(|_| "stable".to_string());
+    let channel = std::env::var("UPMC_CHANNEL")
+        .unwrap_or_else(|_| "stable".to_string())
+        .to_lowercase();
     println!("cargo:rustc-env=UPMC_CHANNEL={channel}");
 }
