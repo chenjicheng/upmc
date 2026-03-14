@@ -113,7 +113,7 @@ pub fn run_update(
     // 阶段 0: 首次安装自举（如果需要）
     // ─────────────────────────────────────────────
     if bootstrap::needs_bootstrap(base_dir) {
-        on_progress(Progress::new(2, "首次运行，正在下载组件..."));
+        on_progress(Progress::new(15, "首次运行，正在下载组件..."));
         bootstrap::run_bootstrap(base_dir, &remote.downloads, on_progress)?;
     } else {
         on_progress(Progress::new(50, "组件检查完毕"));
