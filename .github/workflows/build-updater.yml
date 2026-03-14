@@ -113,23 +113,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload tools updater.exe --clobber
+          # 如果 tools Release 不存在则创建
+          gh release view tools 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create tools updater.exe --title "Tools" --notes "工具发布"
+          } else {
+            gh release upload tools updater.exe --clobber
+          }
           Write-Host "已上传到 tools Release" -ForegroundColor Green
 
-      - name: 创建正式 Release
+      - name: 创建或更新正式 Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          # 如果该 tag 的 Release 已存在，先删除
-          gh release delete $env:TAG_NAME --yes 2>$null
-          # 创建新 Release 并附带 exe
-          gh release create $env:TAG_NAME updater.exe `
-            --title $env:TAG_NAME `
-            --generate-notes
-          Write-Host "已创建 Release $env:TAG_NAME" -ForegroundColor Green
+          # 检查 Release 是否已存在，存在则上传覆盖，不存在则创建
+          gh release view $env:TAG_NAME 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG_NAME updater.exe `
+              --title $env:TAG_NAME `
+              --generate-notes
+          } else {
+            gh release upload $env:TAG_NAME updater.exe --clobber
+          }
+          Write-Host "已创建/更新 Release $env:TAG_NAME" -ForegroundColor Green
 
       - name: 上传到 dev-latest Release
         if: github.ref == 'refs/heads/dev'
@@ -165,8 +174,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: gh-pages
-          # 如果 gh-pages 分支不存在，后面会创建
-          fetch-depth: 0
+          fetch-depth: 1
         continue-on-error: true
 
       - name: 初始化 gh-pages（如果不存在）
@@ -204,17 +212,20 @@ jobs:
           BUILD_ID="${GITHUB_SHA}"
           SHA256=$(cat sha256.txt)
 
-          # 更新根目录的 version.json（不影响 dev/ 子目录）
-          # 保留 version 字段确保旧版本（<= 0.3.8）能正常解析
-          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\",\"sha256\":\"${SHA256}\"}" > version.json
+          # 使用 jq 生成 JSON，避免手工拼接导致的格式风险
+          jq -n \
+            --arg version "$VERSION" \
+            --arg download_url "$DOWNLOAD_URL" \
+            --arg build_id "$BUILD_ID" \
+            --arg sha256 "$SHA256" \
+            '{version: $version, download_url: $download_url, build_id: $build_id, sha256: $sha256}' \
+            > version.json
+
           cp _source/CNAME CNAME 2>/dev/null || true
           rm -rf _source
 
           echo "=== version.json ==="
           cat version.json
-          echo ""
-          echo "下载: $DOWNLOAD_URL"
-          echo "SHA256: $SHA256"
 
       - name: 提交并推送到 gh-pages
         env:
@@ -222,7 +233,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add version.json CNAME
+          git add version.json
+          [ -f CNAME ] && git add CNAME
           git diff --cached --quiet && echo "无变更" || git commit -m "deploy stable $REF_NAME"
           git push origin gh-pages
 
@@ -239,7 +251,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: gh-pages
-          fetch-depth: 0
+          fetch-depth: 1
         continue-on-error: true
 
       - name: 初始化 gh-pages（如果不存在）
@@ -278,23 +290,26 @@ jobs:
           BUILD_ID="${GITHUB_SHA}"
           SHA256=$(cat sha256.txt)
 
-          # 写入 dev/version.json（不影响根目录的 stable version.json）
+          # 使用 jq 生成 JSON
           mkdir -p dev
-          echo "{\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\",\"sha256\":\"${SHA256}\"}" > dev/version.json
+          jq -n \
+            --arg download_url "$DOWNLOAD_URL" \
+            --arg build_id "$BUILD_ID" \
+            --arg sha256 "$SHA256" \
+            '{download_url: $download_url, build_id: $build_id, sha256: $sha256}' \
+            > dev/version.json
+
           cp _source/CNAME CNAME 2>/dev/null || true
           rm -rf _source
 
           echo "=== dev/version.json ==="
           cat dev/version.json
-          echo ""
-          echo "构建: $BUILD_ID"
-          echo "下载: $DOWNLOAD_URL"
-          echo "SHA256: $SHA256"
 
       - name: 提交并推送到 gh-pages
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add version.json dev/version.json CNAME
+          git add dev/version.json
+          [ -f CNAME ] && git add CNAME
           git diff --cached --quiet && echo "无变更" || git commit -m "deploy dev build ${GITHUB_SHA:0:7}"
           git push origin gh-pages
