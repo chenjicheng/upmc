@@ -168,3 +168,50 @@ fn diagnose_sync_failure(stdout: &str, stderr: &str) -> String {
     let hint_lines: Vec<String> = hints.iter().map(|h| format!("  • {}", h)).collect();
     format!("\n可能的原因:\n{}\n", hint_lines.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnose_network_error() {
+        let result = diagnose_sync_failure("", "java.net.UnknownHostException: example.com");
+        assert!(result.contains("网络"));
+    }
+
+    #[test]
+    fn diagnose_timeout() {
+        let result = diagnose_sync_failure("Connection timed out", "");
+        assert!(result.contains("网络"));
+    }
+
+    #[test]
+    fn diagnose_ssl_error() {
+        let result = diagnose_sync_failure("", "javax.net.ssl.SSLHandshakeException: ...");
+        assert!(result.contains("SSL"));
+    }
+
+    #[test]
+    fn diagnose_permission_error() {
+        let result = diagnose_sync_failure("", "Access denied to file mods/test.jar");
+        assert!(result.contains("权限"));
+    }
+
+    #[test]
+    fn diagnose_null_pointer() {
+        let result = diagnose_sync_failure("NullPointerException at ...", "");
+        assert!(result.contains("null"));
+    }
+
+    #[test]
+    fn diagnose_generic_java_exception() {
+        let result = diagnose_sync_failure("", "java.lang.IllegalStateException: bad state");
+        assert!(result.contains("Java 异常"));
+    }
+
+    #[test]
+    fn diagnose_no_match() {
+        let result = diagnose_sync_failure("all good", "no errors");
+        assert!(result.is_empty());
+    }
+}
