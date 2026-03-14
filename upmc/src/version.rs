@@ -293,3 +293,184 @@ pub fn save_pack_cache(base_dir: &Path, pack_toml: &str) -> Result<()> {
     fs::write(&cache_path, pack_toml).context("写入 pack.toml 缓存失败")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_pack_toml_versions ──
+
+    #[test]
+    fn parse_standard_pack_toml() {
+        let toml = r#"
+[pack]
+name = "test-pack"
+version = "1.0.0"
+
+[versions]
+fabric = "0.18.4"
+minecraft = "1.21.11"
+
+[index]
+file = "index.toml"
+"#;
+        let (mc, fabric) = parse_pack_toml_versions(toml).unwrap();
+        assert_eq!(mc, "1.21.11");
+        assert_eq!(fabric, "0.18.4");
+    }
+
+    #[test]
+    fn parse_versions_with_inline_comments() {
+        let toml = r#"
+[versions]
+minecraft = "1.20.4" # latest stable
+fabric = "0.15.0" # required
+"#;
+        let (mc, fabric) = parse_pack_toml_versions(toml).unwrap();
+        assert_eq!(mc, "1.20.4");
+        assert_eq!(fabric, "0.15.0");
+    }
+
+    #[test]
+    fn parse_versions_at_end_of_file() {
+        let toml = "[versions]\nminecraft = \"1.21.0\"\nfabric = \"0.16.0\"";
+        let (mc, fabric) = parse_pack_toml_versions(toml).unwrap();
+        assert_eq!(mc, "1.21.0");
+        assert_eq!(fabric, "0.16.0");
+    }
+
+    #[test]
+    fn parse_missing_minecraft_version() {
+        let toml = "[versions]\nfabric = \"0.18.4\"";
+        let result = parse_pack_toml_versions(toml);
+        assert!(result.is_err());
+        assert!(format!("{:#}", result.unwrap_err()).contains("minecraft"));
+    }
+
+    #[test]
+    fn parse_missing_fabric_version() {
+        let toml = "[versions]\nminecraft = \"1.21.11\"";
+        let result = parse_pack_toml_versions(toml);
+        assert!(result.is_err());
+        assert!(format!("{:#}", result.unwrap_err()).contains("fabric"));
+    }
+
+    #[test]
+    fn parse_no_versions_section() {
+        let toml = "[pack]\nname = \"test\"";
+        let result = parse_pack_toml_versions(toml);
+        assert!(result.is_err());
+    }
+
+    // ── extract_toml_value ──
+
+    #[test]
+    fn extract_double_quoted_value() {
+        assert_eq!(
+            extract_toml_value(r#"minecraft = "1.21.11""#, "minecraft"),
+            Some("1.21.11".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_single_quoted_value() {
+        assert_eq!(
+            extract_toml_value("minecraft = '1.21.11'", "minecraft"),
+            Some("1.21.11".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_unquoted_value() {
+        assert_eq!(
+            extract_toml_value("count = 42", "count"),
+            Some("42".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_value_with_comment() {
+        assert_eq!(
+            extract_toml_value("count = 42 # answer", "count"),
+            Some("42".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_no_match_different_key() {
+        assert_eq!(extract_toml_value("fabric = \"0.18\"", "minecraft"), None);
+    }
+
+    #[test]
+    fn extract_no_false_prefix_match() {
+        // "fabric" should not match a line starting with "fabric_loader"
+        assert_eq!(
+            extract_toml_value("fabric_loader = \"0.18\"", "fabric"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_with_extra_spaces() {
+        assert_eq!(
+            extract_toml_value("  minecraft  =  \"1.21.11\"  ", "minecraft"),
+            Some("1.21.11".to_string())
+        );
+    }
+
+    // ── needs_version_upgrade ──
+
+    #[test]
+    fn upgrade_needed_when_mc_differs() {
+        let remote = RemoteVersion {
+            mc_version: "1.21.11".into(),
+            fabric_version: "0.18.4".into(),
+            version_tag: "".into(),
+            pack_url: "".into(),
+            downloads: Downloads::default(),
+            pack_toml_raw: "".into(),
+        };
+        let local = LocalVersion {
+            mc_version: "1.20.4".into(),
+            fabric_version: "0.18.4".into(),
+            version_tag: "".into(),
+        };
+        assert!(needs_version_upgrade(&remote, &local));
+    }
+
+    #[test]
+    fn upgrade_needed_when_fabric_differs() {
+        let remote = RemoteVersion {
+            mc_version: "1.21.11".into(),
+            fabric_version: "0.18.5".into(),
+            version_tag: "".into(),
+            pack_url: "".into(),
+            downloads: Downloads::default(),
+            pack_toml_raw: "".into(),
+        };
+        let local = LocalVersion {
+            mc_version: "1.21.11".into(),
+            fabric_version: "0.18.4".into(),
+            version_tag: "".into(),
+        };
+        assert!(needs_version_upgrade(&remote, &local));
+    }
+
+    #[test]
+    fn no_upgrade_when_versions_match() {
+        let remote = RemoteVersion {
+            mc_version: "1.21.11".into(),
+            fabric_version: "0.18.4".into(),
+            version_tag: "".into(),
+            pack_url: "".into(),
+            downloads: Downloads::default(),
+            pack_toml_raw: "".into(),
+        };
+        let local = LocalVersion {
+            mc_version: "1.21.11".into(),
+            fabric_version: "0.18.4".into(),
+            version_tag: "".into(),
+        };
+        assert!(!needs_version_upgrade(&remote, &local));
+    }
+}
