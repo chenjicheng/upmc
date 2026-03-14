@@ -78,13 +78,21 @@ pub struct ChannelConfig {
     pub channel: UpdateChannel,
 }
 
-/// 保存通道配置到 channel.json。
+/// 保存通道配置到 channel.json（仅在内容变化时写入）。
 pub fn save_channel_config(base_dir: &Path, config: &ChannelConfig) -> Result<()> {
     let path = base_dir.join(CHANNEL_CONFIG_FILE);
+    let json = serde_json::to_string_pretty(config).context("序列化通道配置失败")?;
+
+    // 仅在内容变化时写入，减少不必要的 I/O
+    if let Ok(existing) = fs::read_to_string(&path) {
+        if existing == json {
+            return Ok(());
+        }
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("创建 updater 目录失败")?;
     }
-    let json = serde_json::to_string_pretty(config).context("序列化通道配置失败")?;
     fs::write(&path, json).context("写入 channel.json 失败")?;
     Ok(())
 }
