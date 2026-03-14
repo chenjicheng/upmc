@@ -89,15 +89,30 @@ jobs:
           UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
         run: cargo build --release
 
+      - name: 准备产物并计算 SHA256
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+        shell: pwsh
+        run: |
+          Copy-Item upmc/target/release/upmc.exe updater.exe
+          $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
+          $hash = (Get-FileHash updater.exe -Algorithm SHA256).Hash.ToLower()
+          Write-Host "产物大小: $size MB"
+          Write-Host "SHA256: $hash"
+          $hash | Out-File -FilePath sha256.txt -NoNewline -Encoding ascii
+
+      - name: 上传 SHA256
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha256
+          path: sha256.txt
+
       - name: 上传到 tools Release（向后兼容）
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          Copy-Item upmc/target/release/upmc.exe updater.exe
-          $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
-          Write-Host "产物大小: $size MB"
           gh release upload tools updater.exe --clobber
           Write-Host "已上传到 tools Release" -ForegroundColor Green
 
@@ -169,6 +184,11 @@ jobs:
           path: _source
           sparse-checkout: CNAME
 
+      - name: 下载 SHA256
+        uses: actions/download-artifact@v4
+        with:
+          name: sha256
+
       - name: 生成 stable version.json
         env:
           GH_TOKEN: ${{ github.token }}
@@ -181,10 +201,11 @@ jobs:
           DOWNLOAD_URL="https://gh.cjcx.org/${DOWNLOAD_URL}"
 
           BUILD_ID="${GITHUB_SHA}"
+          SHA256=$(cat sha256.txt)
 
           # 更新根目录的 version.json（不影响 dev/ 子目录）
           # 保留 version 字段确保旧版本（<= 0.3.8）能正常解析
-          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\"}" > version.json
+          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\",\"sha256\":\"${SHA256}\"}" > version.json
           cp _source/CNAME CNAME 2>/dev/null || true
           rm -rf _source
 
@@ -192,6 +213,7 @@ jobs:
           cat version.json
           echo ""
           echo "下载: $DOWNLOAD_URL"
+          echo "SHA256: $SHA256"
 
       - name: 提交并推送到 gh-pages
         run: |
@@ -232,6 +254,11 @@ jobs:
           path: _source
           sparse-checkout: CNAME
 
+      - name: 下载 SHA256
+        uses: actions/download-artifact@v4
+        with:
+          name: sha256
+
       - name: 生成 dev version.json
         env:
           GH_TOKEN: ${{ github.token }}
@@ -246,14 +273,11 @@ jobs:
           fi
 
           BUILD_ID="${GITHUB_SHA}"
-
-          # 读取 Cargo.toml 版本号（向后兼容旧版本）
-          VERSION=$(grep -m1 'version' _source/upmc/Cargo.toml 2>/dev/null | sed 's/.*"\(.*\)".*/\1/' || echo "0.0.0")
+          SHA256=$(cat sha256.txt)
 
           # 写入 dev/version.json（不影响根目录的 stable version.json）
-          # 保留 version 字段确保旧版本（<= 0.3.8）能正常解析
           mkdir -p dev
-          echo "{\"version\":\"${VERSION}\",\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\"}" > dev/version.json
+          echo "{\"download_url\":\"${DOWNLOAD_URL}\",\"build_id\":\"${BUILD_ID}\",\"sha256\":\"${SHA256}\"}" > dev/version.json
           cp _source/CNAME CNAME 2>/dev/null || true
           rm -rf _source
 
@@ -262,6 +286,7 @@ jobs:
           echo ""
           echo "构建: $BUILD_ID"
           echo "下载: $DOWNLOAD_URL"
+          echo "SHA256: $SHA256"
 
       - name: 提交并推送到 gh-pages
         run: |
