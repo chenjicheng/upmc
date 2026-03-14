@@ -134,6 +134,9 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
         serde_json::from_str(&body).context("解析 server.json 失败")?;
 
     // 2. 拉取 pack.toml 并解析版本
+    if !server_config.pack_url.starts_with("https://") {
+        anyhow::bail!("pack_url 必须使用 HTTPS 协议: {}", server_config.pack_url);
+    }
     let pack_toml = agent
         .get(&server_config.pack_url)
         .call()
