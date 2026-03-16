@@ -59,6 +59,7 @@ pub fn install_fabric(
     download_vanilla_version(&mc_dir, mc_version)?;
 
     // 调用 Fabric Installer（使用 -noprofile，PCL2 不需要）
+    // 使用 BMCLAPI 镜像加速国内下载
     let output = Command::new(&java)
         .arg("-jar")
         .arg(&installer_jar)
@@ -70,6 +71,10 @@ pub fn install_fabric(
         .arg("-loader")
         .arg(fabric_version)
         .arg("-noprofile")
+        .arg("-metaurl")
+        .arg(config::FABRIC_META_URL)
+        .arg("-mavenurl")
+        .arg(config::FABRIC_MAVEN_URL)
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()
         .context("启动 Fabric 安装器失败")?;
