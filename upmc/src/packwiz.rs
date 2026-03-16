@@ -49,6 +49,9 @@ pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
 
     std::fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
 
+    // 前置验证 Java 可用（确定性失败，不进入重试循环）
+    verify_java(&java)?;
+
     // ── 网络操作（可能因网络波动失败，需要重试） ──
     let url_owned = pack_url.to_string();
 
@@ -117,6 +120,45 @@ fn run_packwiz_installer(
             stdout_display,
             stderr_display,
             hints,
+        );
+    }
+
+    Ok(())
+}
+
+/// 前置验证 Java 是否能正常启动。
+///
+/// 运行 `java -version`，如果失败且输出包含环境异常关键词，
+/// 自动打开下载页面并返回错误（不进入重试循环）。
+fn verify_java(java: &Path) -> Result<()> {
+    let output = Command::new(java)
+        .arg("-version")
+        .creation_flags(config::CREATE_NO_WINDOW)
+        .output()
+        .context("无法启动 Java 进程")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let _ = Command::new("cmd")
+            .args(["/c", "start", "", config::JAVA_DOWNLOAD_URL])
+            .creation_flags(config::CREATE_NO_WINDOW)
+            .spawn();
+
+        bail!(
+            "Java 环境异常\n\
+             \n\
+             错误信息: {}\n\
+             \n\
+             当前 Java 路径: {}\n\
+             该 Java 安装可能已损坏或版本不兼容。\n\
+             正在尝试打开 Java 下载页面，如未自动打开请手动访问：\n\
+             {}\n\
+             \n\
+             安装完成后请重新运行更新器。",
+            stderr.trim(),
+            java.display(),
+            config::JAVA_DOWNLOAD_URL,
         );
     }
 
