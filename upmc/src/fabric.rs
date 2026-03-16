@@ -77,6 +77,38 @@ pub fn install_fabric(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{}\n{}", stdout, stderr);
+
+        // 检测 Java 环境损坏（如 jvm.cfg 缺失、jni 错误等）
+        let java_broken = combined.contains("jvm.cfg")
+            || combined.contains("Error: could not find Java")
+            || combined.contains("Error: could not open")
+            || combined.contains("jni error")
+            || combined.contains("UnsupportedClassVersionError");
+
+        if java_broken {
+            // 自动打开 Java 下载页面
+            let _ = Command::new("cmd")
+                .args(["/c", "start", "", config::JAVA_DOWNLOAD_URL])
+                .creation_flags(config::CREATE_NO_WINDOW)
+                .spawn();
+
+            bail!(
+                "Fabric 安装失败：Java 环境异常\n\
+                 \n\
+                 错误信息: {}\n\
+                 \n\
+                 当前 Java 路径: {}\n\
+                 该 Java 安装可能已损坏或版本不兼容。\n\
+                 正在尝试打开 Java 下载页面，如未自动打开请手动访问：\n\
+                 {}\n\
+                 \n\
+                 安装完成后请重新运行更新器。",
+                stderr.trim(),
+                java.display(),
+                config::JAVA_DOWNLOAD_URL,
+            );
+        }
 
         let exit_code_str = match output.status.code() {
             Some(code) => format!("{}", code),
