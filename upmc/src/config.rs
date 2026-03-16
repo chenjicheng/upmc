@@ -112,6 +112,9 @@ pub const PACK_TOML_CACHE_FILE: &str = "updater/pack_toml_cache.txt";
 pub const PACKWIZ_BOOTSTRAP_JAR: &str = "updater/packwiz-installer-bootstrap.jar";
 pub const FABRIC_INSTALLER_JAR: &str = "updater/fabric-installer.jar";
 pub const MINECRAFT_DIR: &str = ".minecraft";
+/// Fabric Installer 镜像（BMCLAPI）
+pub const FABRIC_META_URL: &str = "https://bmclapi2.bangbang93.com/fabric-meta/";
+pub const FABRIC_MAVEN_URL: &str = "https://bmclapi2.bangbang93.com/maven/";
 pub const PCL2_EXE: &str = "Plain Craft Launcher 2.exe";
 pub const PCL2_SETUP_INI_PATH: &str = "Setup.ini";
 

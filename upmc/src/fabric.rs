@@ -54,11 +54,15 @@ pub fn install_fabric(
             .context("创建 launcher_profiles.json 失败")?;
     }
 
+    // 前置验证 Java 可用
+    verify_java(&java)?;
+
     // 先确保原版 MC 客户端已下载
     // Fabric 安装器不会下载原版，PCL2 需要原版作为前置
     download_vanilla_version(&mc_dir, mc_version)?;
 
     // 调用 Fabric Installer（使用 -noprofile，PCL2 不需要）
+    // 使用 BMCLAPI 镜像加速国内下载
     let output = Command::new(&java)
         .arg("-jar")
         .arg(&installer_jar)
@@ -70,6 +74,10 @@ pub fn install_fabric(
         .arg("-loader")
         .arg(fabric_version)
         .arg("-noprofile")
+        .arg("-metaurl")
+        .arg(config::FABRIC_META_URL)
+        .arg("-mavenurl")
+        .arg(config::FABRIC_MAVEN_URL)
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()
         .context("启动 Fabric 安装器失败")?;
@@ -108,6 +116,44 @@ pub fn install_fabric(
             stderr_display,
             mc_version,
             fabric_version,
+        );
+    }
+
+    Ok(())
+}
+
+/// 前置验证 Java 是否能正常启动。
+///
+/// 运行 `java -version`，如果失败则自动打开下载页面并返回错误。
+fn verify_java(java: &Path) -> Result<()> {
+    let output = Command::new(java)
+        .arg("-version")
+        .creation_flags(config::CREATE_NO_WINDOW)
+        .output()
+        .context("无法启动 Java 进程")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let _ = Command::new("cmd")
+            .args(["/c", "start", "", config::JAVA_DOWNLOAD_URL])
+            .creation_flags(config::CREATE_NO_WINDOW)
+            .spawn();
+
+        bail!(
+            "Java 环境异常\n\
+             \n\
+             错误信息: {}\n\
+             \n\
+             当前 Java 路径: {}\n\
+             该 Java 安装可能已损坏或版本不兼容。\n\
+             正在尝试打开 Java 下载页面，如未自动打开请手动访问：\n\
+             {}\n\
+             \n\
+             安装完成后请重新运行更新器。",
+            stderr.trim(),
+            java.display(),
+            config::JAVA_DOWNLOAD_URL,
         );
     }
 
