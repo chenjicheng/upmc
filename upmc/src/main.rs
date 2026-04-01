@@ -43,12 +43,9 @@ fn main() {
     gui::UpdaterApp::run(base_dir, channel_config);
 }
 
-/// 解析命令行参数中的 --channel，确定更新通道。
+/// 解析更新通道。
 ///
-/// 优先级：命令行参数 > 编译期默认值
-///
-/// 通道由编译时 UPMC_CHANNEL 环境变量决定（CI 注入），
-/// 命令行 `--channel dev/stable` 可临时覆盖。
+/// 优先级：命令行参数 > channel.json（设置窗口保存） > 编译期默认值
 fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
     let args: Vec<String> = std::env::args().collect();
     let mut cli_channel: Option<UpdateChannel> = None;
@@ -71,12 +68,35 @@ fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
         i += 1;
     }
 
-    let channel = cli_channel.unwrap_or(UpdateChannel::COMPILED_DEFAULT);
+    // 命令行 > channel.json > 编译期默认值
+    let path = base_dir.join(config::CHANNEL_CONFIG_FILE);
+    let (channel, from_file) = if let Some(ch) = cli_channel {
+        (ch, false)
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(s) => match serde_json::from_str::<ChannelConfig>(&s) {
+                Ok(cfg) => (cfg.channel, true),
+                Err(e) => {
+                    eprintln!("警告: channel.json 解析失败，使用默认通道: {e}");
+                    (UpdateChannel::COMPILED_DEFAULT, false)
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (UpdateChannel::COMPILED_DEFAULT, false)
+            }
+            Err(e) => {
+                eprintln!("警告: 读取 channel.json 失败，使用默认通道: {e}");
+                (UpdateChannel::COMPILED_DEFAULT, false)
+            }
+        }
+    };
 
-    // 保存到 channel.json（向后兼容，供外部工具读取通道信息）
     let cfg = ChannelConfig { channel };
-    if let Err(e) = config::save_channel_config(base_dir, &cfg) {
-        eprintln!("保存通道配置失败: {e:#}");
+    // 仅在 CLI 指定或文件不存在时写入，避免覆盖损坏的配置
+    if cli_channel.is_some() || !from_file {
+        if let Err(e) = config::save_channel_config(base_dir, &cfg) {
+            eprintln!("保存通道配置失败: {e:#}");
+        }
     }
     cfg
 }
