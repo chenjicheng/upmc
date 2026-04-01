@@ -243,43 +243,64 @@ pub fn kill(base_dir: &Path) {
 
 // ── 内部实现 ───────────────────────────────────────────────
 
-/// 轮询 SOCKS5 端口直到就绪，完成一次完整握手验证。
-/// 最多等 10 秒，每 200ms 重试一次。
+/// 验证 Xray 代理完整链路：本地 SOCKS5 → 远程服务器 → discord.com:443。
+/// 最多等 15 秒（端口就绪 + 远程连接）。
 fn wait_for_socks5(port: u16) -> Result<()> {
-    use std::io::{Read, Write};
-    use std::net::{TcpStream, SocketAddr};
-
-    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
 
     while std::time::Instant::now() < deadline {
-        // 尝试 TCP 连接
-        let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
-            std::thread::sleep(Duration::from_millis(200));
-            continue;
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
-
-        // SOCKS5 握手: 发送 VER=5, NMETHODS=1, METHOD=0 (no auth)
-        if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
-            std::thread::sleep(Duration::from_millis(200));
-            continue;
-        }
-
-        // 期望回复 VER=5, METHOD=0
-        let mut resp = [0u8; 2];
-        if stream.read_exact(&mut resp).is_ok() && resp[0] == 0x05 {
+        if let Ok(()) = test_socks5_connect(&addr, "discord.com", 443) {
             return Ok(());
         }
-
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(500));
     }
 
     bail!(
-        "Xray SOCKS5 代理未就绪（127.0.0.1:{port}）\n\
-         可能原因：配置错误、端口被占用、或远程服务器不可达"
+        "Xray 代理连通性检查失败（无法通过 127.0.0.1:{port} 连接到 discord.com）\n\
+         可能原因：订阅节点不可用、Xray 配置错误、或网络问题"
     );
+}
+
+/// 通过 SOCKS5 代理尝试 CONNECT 到目标主机，验证完整链路。
+fn test_socks5_connect(
+    proxy: &std::net::SocketAddr,
+    target_host: &str,
+    target_port: u16,
+) -> Result<()> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect_timeout(proxy, Duration::from_secs(2))
+        .context("无法连接到本地 SOCKS5 端口")?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    // SOCKS5 握手
+    stream.write_all(&[0x05, 0x01, 0x00])?;
+    let mut resp = [0u8; 2];
+    stream.read_exact(&mut resp)?;
+    if resp[0] != 0x05 || resp[1] != 0x00 {
+        bail!("SOCKS5 握手失败");
+    }
+
+    // SOCKS5 CONNECT: VER=5 CMD=1(CONNECT) RSV=0 ATYP=3(域名)
+    let host_bytes = target_host.as_bytes();
+    let mut req = Vec::with_capacity(7 + host_bytes.len());
+    req.extend_from_slice(&[0x05, 0x01, 0x00, 0x03]);
+    req.push(host_bytes.len() as u8);
+    req.extend_from_slice(host_bytes);
+    req.extend_from_slice(&target_port.to_be_bytes());
+    stream.write_all(&req)?;
+
+    // 读取回复（至少 10 字节: VER REP RSV ATYP ADDR PORT）
+    let mut reply = [0u8; 10];
+    stream.read_exact(&mut reply)?;
+    if reply[0] != 0x05 || reply[1] != 0x00 {
+        bail!("SOCKS5 CONNECT 到 {target_host}:{target_port} 失败 (REP={})", reply[1]);
+    }
+
+    Ok(())
 }
 
 fn fetch_latest_release() -> Result<GithubRelease> {
