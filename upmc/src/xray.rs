@@ -219,10 +219,10 @@ pub fn start(base_dir: &Path) -> Result<()> {
         .spawn()
         .context("启动 Xray 失败")?;
 
-    // 保存 PID 以便精准终止（不影响系统中其他 xray.exe）
     let _ = std::fs::write(xray_dir.join("xray.pid"), child.id().to_string());
 
-    std::thread::sleep(Duration::from_secs(2));
+    // 等待 SOCKS5 端口就绪并验证连通性
+    wait_for_socks5(config::XRAY_SOCKS_PORT)?;
     Ok(())
 }
 
@@ -242,6 +242,45 @@ pub fn kill(base_dir: &Path) {
 }
 
 // ── 内部实现 ───────────────────────────────────────────────
+
+/// 轮询 SOCKS5 端口直到就绪，完成一次完整握手验证。
+/// 最多等 10 秒，每 200ms 重试一次。
+fn wait_for_socks5(port: u16) -> Result<()> {
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, SocketAddr};
+
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+    while std::time::Instant::now() < deadline {
+        // 尝试 TCP 连接
+        let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+
+        // SOCKS5 握手: 发送 VER=5, NMETHODS=1, METHOD=0 (no auth)
+        if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+
+        // 期望回复 VER=5, METHOD=0
+        let mut resp = [0u8; 2];
+        if stream.read_exact(&mut resp).is_ok() && resp[0] == 0x05 {
+            return Ok(());
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    bail!(
+        "Xray SOCKS5 代理未就绪（127.0.0.1:{port}）\n\
+         可能原因：配置错误、端口被占用、或远程服务器不可达"
+    );
+}
 
 fn fetch_latest_release() -> Result<GithubRelease> {
     retry::with_retry(
