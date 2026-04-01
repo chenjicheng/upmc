@@ -77,27 +77,28 @@ jobs:
       - name: 缓存 Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: upmc -> target
+          workspaces: . -> target
           cache-on-failure: true
           # tag 触发时 ref 不是分支，需要固定 key 才能跨 tag 复用缓存
           shared-key: updater-release
 
-      - name: 编译 Release
-        working-directory: upmc
+      - name: 编译代理 DLL（upmc 通过 include_bytes 嵌入）
+        run: cargo build --release -p discord-proxy-dll -p force-proxy-dll
+
+      - name: 编译 updater（内嵌 DLL）
         env:
           UPMC_BUILD_ID: ${{ github.sha }}
           UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
-        run: cargo build --release
+        run: cargo build --release -p upmc
 
       - name: 准备产物并计算 SHA256
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
         shell: pwsh
         run: |
-          Copy-Item upmc/target/release/upmc.exe updater.exe
+          Copy-Item target/release/upmc.exe updater.exe
           $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
           $hash = (Get-FileHash updater.exe -Algorithm SHA256).Hash.ToLower()
-          Write-Host "产物大小: $size MB"
-          Write-Host "SHA256: $hash"
+          Write-Host "updater.exe: $size MB, SHA256: $hash"
           $hash | Out-File -FilePath sha256.txt -NoNewline -Encoding ascii
 
       - name: 上传 SHA256
@@ -107,7 +108,7 @@ jobs:
           name: sha256
           path: sha256.txt
 
-      - name: 上传到 tools Release（向后兼容）
+      - name: 上传到 tools Release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
@@ -146,7 +147,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          Copy-Item upmc/target/release/upmc.exe updater.exe
+          # 产物已在"准备产物"步骤中复制
           $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
           Write-Host "产物大小: $size MB"
           # 创建或更新 dev-latest pre-release

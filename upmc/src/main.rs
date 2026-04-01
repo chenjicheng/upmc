@@ -15,6 +15,7 @@
 
 mod bootstrap;
 mod config;
+mod discord_proxy;
 mod fabric;
 mod gui;
 mod packwiz;
@@ -22,6 +23,7 @@ mod retry;
 mod selfupdate;
 mod update;
 mod version;
+mod xray;
 
 use config::{ChannelConfig, UpdateChannel};
 use std::path::PathBuf;

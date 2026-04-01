@@ -235,6 +235,26 @@ LaunchArgumentWindowWidth=1280\r\n\
 LaunchArgumentWindowHeight=720\r\n\
 ";
 
+// ── Discord 代理 / Xray ──
+
+/// GitHub 下载代理前缀（与自更新模块使用同一镜像）
+pub const GITHUB_PROXY: &str = "https://gh.cjcx.org/";
+
+/// Xray GitHub 仓库
+pub const XRAY_GITHUB_REPO: &str = "XTLS/Xray-core";
+
+/// Xray Release 中 Windows 64-bit 的资产名
+pub const XRAY_ASSET_NAME: &str = "Xray-windows-64.zip";
+
+/// 代理订阅地址（VLESS REALITY）
+pub const SUBSCRIPTION_URL: &str = "https://64.64.243.63:2096/sub/au1g7ud8nfgksxyt";
+
+/// Xray 本地 SOCKS5 监听端口
+pub const XRAY_SOCKS_PORT: u16 = 10808;
+
+/// Xray 文件存放目录（相对于 base_dir）
+pub const XRAY_DIR: &str = "updater/xray";
+
 // ── Java 查找 ──
 
 /// 自动查找 Java 可执行文件。

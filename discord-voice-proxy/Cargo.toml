@@ -1,0 +1,8 @@
+[package]
+name = "discord-voice-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Route Discord voice chat traffic through a SOCKS5 proxy"
+
+[dependencies]
+anyhow = "1.0"

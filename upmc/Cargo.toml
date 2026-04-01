@@ -27,6 +27,9 @@ sha2 = "0.10"
 # 获取用户目录（文档、桌面等）
 dirs = "6"
 
+# Discord 语音代理库
+discord-voice-proxy = { path = "../discord-voice-proxy" }
+
 # Windows 专用: 隐藏控制台窗口、设置 exe 属性
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["wincon", "winuser"] }
@@ -35,9 +38,3 @@ winapi = { version = "0.3", features = ["wincon", "winuser"] }
 # 嵌入 exe 图标和版本信息
 winresource = "0.1"
 
-[profile.release]
-# 优化编译产物大小
-opt-level = "s"
-lto = true
-strip = true
-codegen-units = 1
