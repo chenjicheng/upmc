@@ -455,7 +455,7 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
     let mut window = Default::default();
     nwg::Window::builder()
         .title("错误日志")
-        .size((600, 420))
+        .size((620, 460))
         .position((200, 200))
         .center(true)
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
@@ -475,7 +475,7 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
     let mut text_box = Default::default();
     nwg::TextBox::builder()
         .text(log_text)
-        .size((560, 300))
+        .size((580, 330))
         .position((20, 38))
         .flags(
             nwg::TextBoxFlags::VISIBLE
@@ -501,7 +501,7 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
     nwg::Button::builder()
         .text("复制日志")
         .size((100, 32))
-        .position((360, 350))
+        .position((380, 380))
         .parent(&window)
         .build(&mut copy_btn)
         .expect("创建按钮失败");
@@ -510,7 +510,7 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
     nwg::Button::builder()
         .text("关闭")
         .size((100, 32))
-        .position((480, 350))
+        .position((500, 380))
         .parent(&window)
         .build(&mut close_btn)
         .expect("创建按钮失败");
@@ -564,7 +564,7 @@ fn show_settings_dialog(parent: &nwg::Window, base_dir: &std::path::Path) {
     let mut window = Default::default();
     nwg::Window::builder()
         .title("设置")
-        .size((300, 160))
+        .size((340, 190))
         .center(true)
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
         .parent(Some(parent))
@@ -595,8 +595,8 @@ fn show_settings_dialog(parent: &nwg::Window, base_dir: &std::path::Path) {
     let mut udp_check = Default::default();
     nwg::CheckBox::builder()
         .text("代理 UDP 流量（Discord 语音走代理）")
-        .size((260, 25))
-        .position((20, 60))
+        .size((300, 25))
+        .position((20, 65))
         .check_state(if current_settings.proxy_udp {
             nwg::CheckBoxState::Checked
         } else {
@@ -610,8 +610,8 @@ fn show_settings_dialog(parent: &nwg::Window, base_dir: &std::path::Path) {
     let mut save_btn = Default::default();
     nwg::Button::builder()
         .text("保存")
-        .size((100, 32))
-        .position((70, 100))
+        .size((100, 35))
+        .position((80, 110))
         .parent(&window)
         .build(&mut save_btn)
         .expect("button");
@@ -620,8 +620,8 @@ fn show_settings_dialog(parent: &nwg::Window, base_dir: &std::path::Path) {
     let mut cancel_btn = Default::default();
     nwg::Button::builder()
         .text("取消")
-        .size((100, 32))
-        .position((180, 100))
+        .size((100, 35))
+        .position((200, 110))
         .parent(&window)
         .build(&mut cancel_btn)
         .expect("button");
