@@ -9,12 +9,14 @@ use crate::config;
 use crate::update::Progress;
 use crate::xray;
 
-fn proxy_config() -> discord_voice_proxy::ProxyConfig {
+fn proxy_config(base_dir: &Path) -> discord_voice_proxy::ProxyConfig {
+    let settings = config::load_user_settings(base_dir);
     discord_voice_proxy::ProxyConfig {
         address: "127.0.0.1".to_string(),
         port: config::XRAY_SOCKS_PORT,
         login: None,
         password: None,
+        udp: settings.proxy_udp,
     }
 }
 
@@ -50,7 +52,7 @@ pub fn setup(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<()> {
 
     on_progress(Progress::new(60, "正在安装 Discord 代理..."));
     on_progress(Progress::new(80, "正在重启 Discord..."));
-    discord_voice_proxy::installer::install_and_run(DWRITE_DLL, FORCE_PROXY_DLL, &proxy_config())?;
+    discord_voice_proxy::installer::install_and_run(DWRITE_DLL, FORCE_PROXY_DLL, &proxy_config(base_dir))?;
 
     on_progress(Progress::new(100, "Discord 代理已启用"));
     Ok(())
@@ -63,7 +65,7 @@ pub fn auto_start(base_dir: &Path) -> Result<()> {
     xray::download_or_update(base_dir, &noop)?;
     // Xray 必须成功启动，才安装 DLL
     xray::start(base_dir)?;
-    install_dlls();
+    install_dlls(base_dir);
     Ok(())
 }
 
@@ -74,9 +76,9 @@ pub fn stop(base_dir: &Path) {
 }
 
 /// 安装/刷新 DLL 到 Discord（仅写入缺失的文件）。
-fn install_dlls() {
+fn install_dlls(base_dir: &Path) {
     if let Err(e) =
-        discord_voice_proxy::installer::ensure_installed(DWRITE_DLL, FORCE_PROXY_DLL, &proxy_config())
+        discord_voice_proxy::installer::ensure_installed(DWRITE_DLL, FORCE_PROXY_DLL, &proxy_config(base_dir))
     {
         eprintln!("安装 Discord 代理 DLL 失败: {e:#}");
     }

@@ -10,6 +10,8 @@ pub struct ProxyConfig {
     pub port: u16,
     pub login: Option<String>,
     pub password: Option<String>,
+    /// 是否劫持 UDP 流量（Discord 语音）。默认 true。
+    pub udp: bool,
 }
 
 impl ProxyConfig {
@@ -19,11 +21,13 @@ impl ProxyConfig {
             "SOCKS5_PROXY_ADDRESS={}\n\
              SOCKS5_PROXY_PORT={}\n\
              SOCKS5_PROXY_LOGIN={}\n\
-             SOCKS5_PROXY_PASSWORD={}",
+             SOCKS5_PROXY_PASSWORD={}\n\
+             SOCKS5_PROXY_UDP={}",
             self.address,
             self.port,
             self.login.as_deref().unwrap_or("empty"),
             self.password.as_deref().unwrap_or("empty"),
+            self.udp,
         )
     }
 
@@ -33,6 +37,7 @@ impl ProxyConfig {
         let mut port = 0u16;
         let mut login = None;
         let mut password = None;
+        let mut udp = true;
 
         for line in content.lines() {
             let Some((key, value)) = line.split_once('=') else {
@@ -53,6 +58,9 @@ impl ProxyConfig {
                         password = Some(v.to_string());
                     }
                 }
+                "SOCKS5_PROXY_UDP" => {
+                    udp = value.trim().eq_ignore_ascii_case("true");
+                }
                 _ => {}
             }
         }
@@ -65,6 +73,7 @@ impl ProxyConfig {
             port,
             login,
             password,
+            udp,
         })
     }
 }
@@ -86,6 +95,7 @@ mod tests {
             port: 10808,
             login: Some("user".into()),
             password: Some("pass".into()),
+            udp: true,
         };
         let txt = config.to_proxy_txt();
         let parsed = ProxyConfig::from_proxy_txt(&txt).unwrap();
@@ -100,6 +110,7 @@ mod tests {
         let config = ProxyConfig {
             address: "127.0.0.1".into(),
             port: 2080,
+            udp: false,
             login: None,
             password: None,
         };

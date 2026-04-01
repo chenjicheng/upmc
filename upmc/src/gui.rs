@@ -127,7 +127,7 @@ pub struct UpdaterApp {
     // ── 启动 PCL 按钮（初始隐藏） ──
     #[nwg_control(
         text: "启动 PCL",
-        size: (183, 35),
+        size: (140, 35),
         position: (20, 120)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_launch_pcl])]
@@ -136,11 +136,20 @@ pub struct UpdaterApp {
     // ── 启用 Discord 代理按钮（初始隐藏） ──
     #[nwg_control(
         text: "启用 Discord 代理",
-        size: (183, 35),
-        position: (213, 120)
+        size: (175, 35),
+        position: (165, 120)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_enable_discord_proxy])]
     btn_discord_proxy: nwg::Button,
+
+    // ── 设置按钮（初始隐藏） ──
+    #[nwg_control(
+        text: "设置",
+        size: (55, 35),
+        position: (345, 120)
+    )]
+    #[nwg_events(OnButtonClick: [UpdaterApp::on_settings])]
+    btn_settings: nwg::Button,
 
     // ── 布局管理器 ──
     #[nwg_layout(parent: window, spacing: 1, max_row: Some(5), max_column: Some(1))]
@@ -182,9 +191,9 @@ impl UpdaterApp {
         app.window.set_text(&title);
         app.hint_label.set_text("请勿关闭此窗口...");
 
-        // 按钮初始隐藏
         app.btn_launch_pcl.set_visible(false);
         app.btn_discord_proxy.set_visible(false);
+        app.btn_settings.set_visible(false);
 
         // 启动后台更新线程
         let state = Arc::clone(&app.shared_state);
@@ -319,6 +328,7 @@ impl UpdaterApp {
                 self.hint_label.set_visible(true);
                 self.btn_launch_pcl.set_visible(true);
                 self.btn_discord_proxy.set_visible(true);
+                self.btn_settings.set_visible(true);
                 if let Some(log) = log_text.as_deref() {
                     show_error_log_dialog(&self.window, log);
                 }
@@ -338,6 +348,7 @@ impl UpdaterApp {
         }
         self.btn_launch_pcl.set_visible(true);
         self.btn_discord_proxy.set_visible(true);
+        self.btn_settings.set_visible(true);
     }
 
     /// 「启动 PCL」按钮点击
@@ -382,6 +393,7 @@ impl UpdaterApp {
         // 否则执行启用/配置流程
         self.btn_launch_pcl.set_visible(false);
         self.btn_discord_proxy.set_visible(false);
+        self.btn_settings.set_visible(false);
         self.hint_label.set_visible(false);
         self.progress_bar.set_pos(0);
         self.status_label.set_text("正在设置 Discord 代理...");
@@ -424,6 +436,12 @@ impl UpdaterApp {
             notice_sender.notice();
             guard.completed = true;
         });
+    }
+
+    /// 「设置」按钮点击
+    fn on_settings(&self) {
+        let base_dir = self.base_dir.borrow().clone();
+        show_settings_dialog(&self.window, &base_dir);
     }
 
     /// 窗口关闭事件
@@ -523,6 +541,128 @@ fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
             _ => {}
         },
     );
+
+    nwg::dispatch_thread_events();
+    nwg::unbind_event_handler(&handler);
+}
+
+/// 设置窗口：更新通道 + UDP 代理开关。
+fn show_settings_dialog(parent: &nwg::Window, base_dir: &std::path::Path) {
+    use crate::config::{
+        ChannelConfig, UpdateChannel, UserSettings,
+        load_user_settings, save_channel_config, save_user_settings,
+    };
+
+    let channel_cfg_path = base_dir.join(config::CHANNEL_CONFIG_FILE);
+    let current_channel = std::fs::read_to_string(&channel_cfg_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<ChannelConfig>(&s).ok())
+        .unwrap_or_default()
+        .channel;
+    let current_settings = load_user_settings(base_dir);
+
+    let mut window = Default::default();
+    nwg::Window::builder()
+        .title("设置")
+        .size((300, 160))
+        .center(true)
+        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
+        .parent(Some(parent))
+        .build(&mut window)
+        .expect("创建设置窗口失败");
+
+    // 更新通道
+    let mut channel_label = Default::default();
+    nwg::Label::builder()
+        .text("更新通道:")
+        .size((80, 22))
+        .position((20, 22))
+        .parent(&window)
+        .build(&mut channel_label)
+        .expect("label");
+
+    let mut channel_combo = Default::default();
+    nwg::ComboBox::builder()
+        .size((170, 25))
+        .position((105, 20))
+        .collection(vec!["stable".to_string(), "dev".to_string()])
+        .selected_index(Some(if current_channel == UpdateChannel::Dev { 1 } else { 0 }))
+        .parent(&window)
+        .build(&mut channel_combo)
+        .expect("combo");
+
+    // UDP 开关
+    let mut udp_check = Default::default();
+    nwg::CheckBox::builder()
+        .text("代理 UDP 流量（Discord 语音走代理）")
+        .size((260, 25))
+        .position((20, 60))
+        .check_state(if current_settings.proxy_udp {
+            nwg::CheckBoxState::Checked
+        } else {
+            nwg::CheckBoxState::Unchecked
+        })
+        .parent(&window)
+        .build(&mut udp_check)
+        .expect("checkbox");
+
+    // 保存按钮
+    let mut save_btn = Default::default();
+    nwg::Button::builder()
+        .text("保存")
+        .size((100, 32))
+        .position((70, 100))
+        .parent(&window)
+        .build(&mut save_btn)
+        .expect("button");
+
+    // 取消按钮
+    let mut cancel_btn = Default::default();
+    nwg::Button::builder()
+        .text("取消")
+        .size((100, 32))
+        .position((180, 100))
+        .parent(&window)
+        .build(&mut cancel_btn)
+        .expect("button");
+
+    let win_handle = window.handle;
+    let save_handle = save_btn.handle;
+    let cancel_handle = cancel_btn.handle;
+    let base_dir = base_dir.to_path_buf();
+
+    // 用 RefCell 包装控件以便在闭包中读取值
+    let channel_combo = std::cell::RefCell::new(channel_combo);
+    let udp_check = std::cell::RefCell::new(udp_check);
+
+    let handler = nwg::full_bind_event_handler(&win_handle, move |evt, _, handle| match evt {
+        nwg::Event::OnButtonClick => {
+            if handle == save_handle {
+                let channel = if channel_combo.borrow().selection() == Some(1) {
+                    UpdateChannel::Dev
+                } else {
+                    UpdateChannel::Stable
+                };
+                let _ = save_channel_config(&base_dir, &ChannelConfig { channel });
+
+                let udp = channel_combo.borrow(); // just to keep the borrow checker happy
+                drop(udp);
+                let udp = udp_check.borrow().check_state() == nwg::CheckBoxState::Checked;
+                let _ = save_user_settings(&base_dir, &UserSettings { proxy_udp: udp });
+
+                nwg::modal_info_message(win_handle, "提示", "设置已保存，下次启动时生效");
+                nwg::stop_thread_dispatch();
+            } else if handle == cancel_handle {
+                nwg::stop_thread_dispatch();
+            }
+        }
+        nwg::Event::OnWindowClose => {
+            if handle == win_handle {
+                nwg::stop_thread_dispatch();
+            }
+        }
+        _ => {}
+    });
 
     nwg::dispatch_thread_events();
     nwg::unbind_event_handler(&handler);

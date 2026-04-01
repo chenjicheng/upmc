@@ -23,6 +23,7 @@ pub struct ProxyConfig {
     pub timeout: u32, // seconds
     pub login: String,
     pub password: String,
+    pub udp: bool,    // 是否劫持 UDP 流量
 }
 
 static CONFIG: OnceLock<ProxyConfig> = OnceLock::new();
@@ -174,7 +175,7 @@ unsafe extern "system" fn detour_bind(
     addr: *const SOCKADDR,
     namelen: c_int,
 ) -> c_int {
-    if is_udp_socket(s) {
+    if cfg().udp && is_udp_socket(s) {
         // Check + insert under one logical operation to avoid TOCTOU race.
         // Lock is released during the blocking init_udp_association call.
         let needs_assoc = !state().lock().unwrap().udp_assoc.contains_key(&(s as usize));
@@ -386,12 +387,14 @@ pub unsafe fn init() {
 
     let port: u16 = port_str.parse().unwrap_or(12334);
 
+    let udp_str = read_env("SOCKS5_PROXY_UDP", "true");
     let _ = CONFIG.set(ProxyConfig {
         address: in_addr.S_un.S_addr,
         port: htons(port),
         timeout: timeout_str.parse().unwrap_or(30),
         login: read_env("SOCKS5_PROXY_LOGIN", ""),
         password: read_env("SOCKS5_PROXY_PASSWORD", ""),
+        udp: udp_str.eq_ignore_ascii_case("true"),
     });
 
     let ws2 = b"ws2_32.dll\0";
