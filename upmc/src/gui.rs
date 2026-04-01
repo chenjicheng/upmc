@@ -25,7 +25,6 @@ use std::thread;
 use crate::config::{self, ChannelConfig};
 use crate::discord_proxy;
 use crate::update::{self, Progress, UpdateResult};
-use crate::xray;
 
 /// 更新完成后的结果状态。
 #[derive(Debug, Clone)]
@@ -374,8 +373,7 @@ impl UpdaterApp {
 
         // 如果当前是"停止代理"，同步执行停止操作
         if btn_text.contains("停止") {
-            xray::kill(&base_dir);
-            let _ = discord_voice_proxy::installer::uninstall();
+            discord_proxy::stop(&base_dir);
             self.show_action_buttons("代理已停止", None);
             self.btn_discord_proxy.set_text("启用 Discord 代理");
             return;

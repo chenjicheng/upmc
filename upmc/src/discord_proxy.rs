@@ -1,11 +1,6 @@
 // ============================================================
 // discord_proxy.rs — Discord 代理设置模块
 // ============================================================
-// 三个职责：
-//   1. setup()              — 首次配置/重新配置（拉订阅、下载 Xray、安装 DLL）
-//   2. auto_start()         — 已配置过时自动启动 Xray（不重新订阅）
-//   3. refresh_if_installed — 静默刷新 DLL
-// ============================================================
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -35,7 +30,6 @@ pub fn is_configured(base_dir: &Path) -> bool {
 }
 
 /// 完整的首次配置/重新配置流程（用户点击按钮触发）。
-/// 拉取订阅、下载/更新 Xray、生成配置、启动 Xray、安装 DLL 到 Discord。
 pub fn setup(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<()> {
     xray::download_or_update(base_dir, on_progress)?;
 
@@ -62,28 +56,28 @@ pub fn setup(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<()> {
     Ok(())
 }
 
-/// 已配置过时自动启动 Xray（不重新订阅，使用已有 config.json）。
-/// 同时刷新 DLL。不重启 Discord。静默操作，不发送 progress。
+/// 已配置过时自动启动 Xray + 安装 DLL。
+/// 如果 Xray 启动失败，不安装 DLL（防止 Discord 卡死）。
 pub fn auto_start(base_dir: &Path) -> Result<()> {
     let noop = |_: Progress| {};
     xray::download_or_update(base_dir, &noop)?;
+    // Xray 必须成功启动，才安装 DLL
     xray::start(base_dir)?;
-    refresh_if_installed();
+    install_dlls();
     Ok(())
 }
 
-/// 静默刷新已安装的代理 DLL（不启动 Xray，不重启 Discord）。
-pub fn refresh_if_installed() {
-    let Ok(is_proxy) = discord_voice_proxy::installer::is_installed() else {
-        return;
-    };
-    if !is_proxy {
-        return;
-    }
+/// 停止代理：杀 Xray + 卸载 Discord DLL。
+pub fn stop(base_dir: &Path) {
+    xray::kill(base_dir);
+    let _ = discord_voice_proxy::installer::uninstall();
+}
 
+/// 安装/刷新 DLL 到 Discord（仅写入缺失的文件）。
+fn install_dlls() {
     if let Err(e) =
         discord_voice_proxy::installer::ensure_installed(DWRITE_DLL, FORCE_PROXY_DLL, &proxy_config())
     {
-        eprintln!("静默刷新 Discord 代理 DLL 失败: {e:#}");
+        eprintln!("安装 Discord 代理 DLL 失败: {e:#}");
     }
 }
