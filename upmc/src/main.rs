@@ -69,18 +69,34 @@ fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
     }
 
     // 命令行 > channel.json > 编译期默认值
-    let channel = cli_channel.unwrap_or_else(|| {
-        let path = base_dir.join(config::CHANNEL_CONFIG_FILE);
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<ChannelConfig>(&s).ok())
-            .map(|c| c.channel)
-            .unwrap_or(UpdateChannel::COMPILED_DEFAULT)
-    });
+    let path = base_dir.join(config::CHANNEL_CONFIG_FILE);
+    let (channel, from_file) = if let Some(ch) = cli_channel {
+        (ch, false)
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(s) => match serde_json::from_str::<ChannelConfig>(&s) {
+                Ok(cfg) => (cfg.channel, true),
+                Err(e) => {
+                    eprintln!("警告: channel.json 解析失败，使用默认通道: {e}");
+                    (UpdateChannel::COMPILED_DEFAULT, false)
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (UpdateChannel::COMPILED_DEFAULT, false)
+            }
+            Err(e) => {
+                eprintln!("警告: 读取 channel.json 失败，使用默认通道: {e}");
+                (UpdateChannel::COMPILED_DEFAULT, false)
+            }
+        }
+    };
 
     let cfg = ChannelConfig { channel };
-    if let Err(e) = config::save_channel_config(base_dir, &cfg) {
-        eprintln!("保存通道配置失败: {e:#}");
+    // 仅在 CLI 指定或文件不存在时写入，避免覆盖损坏的配置
+    if cli_channel.is_some() || !from_file {
+        if let Err(e) = config::save_channel_config(base_dir, &cfg) {
+            eprintln!("保存通道配置失败: {e:#}");
+        }
     }
     cfg
 }
