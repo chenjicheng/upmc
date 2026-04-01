@@ -1,6 +1,6 @@
 {
-  "version": "0.3.11",
-  "download_url": "https://gh.cjcx.org/https://github.com/chenjicheng/upmc/releases/download/v0.3.11/updater.exe",
-  "build_id": "0cfb70ce44d2fbbd82c756bcd0acac8b9d3aeb75",
-  "sha256": "67d239fddcc870e2446b0818d84cc75367046fb3261fc1ce7a1bd23031104275"
+  "version": "0.4.0",
+  "download_url": "https://gh.cjcx.org/https://github.com/chenjicheng/upmc/releases/download/v0.4.0/updater.exe",
+  "build_id": "45b5a250bfedce743c67140171507a8a60f68a01",
+  "sha256": "316a4b4d4a1352c22cb49a4727d706aef9d4e159f5d1c84b70b123ca93a4db96"
 }
