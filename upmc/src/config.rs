@@ -247,7 +247,7 @@ pub const XRAY_GITHUB_REPO: &str = "XTLS/Xray-core";
 pub const XRAY_ASSET_NAME: &str = "Xray-windows-64.zip";
 
 /// 代理订阅地址（VLESS REALITY）
-pub const SUBSCRIPTION_URL: &str = "https://64.64.243.63:2096/sub/au1g7ud8nfgksxyt";
+pub const SUBSCRIPTION_URL: &str = "https://23.165.248.63:2096/sub/j843pdmsfkjepp5u";
 
 /// Xray 本地 SOCKS5 监听端口
 pub const XRAY_SOCKS_PORT: u16 = 10808;
