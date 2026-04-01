@@ -25,6 +25,7 @@ use std::thread;
 use crate::config::{self, ChannelConfig};
 use crate::discord_proxy;
 use crate::update::{self, Progress, UpdateResult};
+use crate::xray;
 
 /// 更新完成后的结果状态。
 #[derive(Debug, Clone)]
@@ -271,7 +272,7 @@ impl UpdaterApp {
             FinishState::Success { proxy_running } => {
                 if proxy_running {
                     self.show_action_buttons("更新完成，代理已就绪", Some("Xray 已在后台运行"));
-                    self.btn_discord_proxy.set_text("重新配置代理");
+                    self.btn_discord_proxy.set_text("停止代理");
                 } else {
                     self.show_action_buttons("更新完成", None);
                     self.btn_discord_proxy.set_text("启用 Discord 代理");
@@ -309,7 +310,7 @@ impl UpdaterApp {
                     "Discord 代理已启用",
                     Some("Xray 已在后台运行，Discord 已配置代理"),
                 );
-                self.btn_discord_proxy.set_text("重新配置代理");
+                self.btn_discord_proxy.set_text("停止代理");
             }
             FinishState::ProxyError(ref error_text) => {
                 self.progress_bar.set_pos(0);
@@ -366,15 +367,27 @@ impl UpdaterApp {
         nwg::stop_thread_dispatch();
     }
 
-    /// 「启用 Discord 代理」按钮点击
+    /// 「启用 Discord 代理」/「停止代理」按钮点击
     fn on_enable_discord_proxy(&self) {
+        let btn_text = self.btn_discord_proxy.text();
+        let base_dir = self.base_dir.borrow().clone();
+
+        // 如果当前是"停止代理"，同步执行停止操作
+        if btn_text.contains("停止") {
+            xray::kill(&base_dir);
+            let _ = discord_voice_proxy::installer::uninstall();
+            self.show_action_buttons("代理已停止", None);
+            self.btn_discord_proxy.set_text("启用 Discord 代理");
+            return;
+        }
+
+        // 否则执行启用/配置流程
         self.btn_launch_pcl.set_visible(false);
         self.btn_discord_proxy.set_visible(false);
         self.hint_label.set_visible(false);
         self.progress_bar.set_pos(0);
         self.status_label.set_text("正在设置 Discord 代理...");
 
-        // 清除上一轮的日志，避免混入更新阶段的记录
         {
             let mut s = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             s.log.clear();
@@ -383,7 +396,6 @@ impl UpdaterApp {
 
         let state = Arc::clone(&self.shared_state);
         let notice_sender = self.progress_notice.sender();
-        let base_dir = self.base_dir.borrow().clone();
 
         thread::spawn(move || {
             let mut guard = PanicGuard {

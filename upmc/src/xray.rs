@@ -41,6 +41,7 @@ pub struct VlessConfig {
     pub address: String,
     pub port: u16,
     pub flow: Option<String>,
+    pub encryption: String,
     pub network: String,
     pub security: String,
     pub sni: String,
@@ -158,7 +159,7 @@ pub fn fetch_subscription(url: &str) -> Result<Vec<VlessConfig>> {
 pub fn generate_config(vless: &VlessConfig, socks_port: u16) -> String {
     let mut user = serde_json::json!({
         "id": vless.uuid,
-        "encryption": "none"
+        "encryption": vless.encryption
     });
     if let Some(ref flow) = vless.flow {
         user["flow"] = serde_json::Value::String(flow.clone());
@@ -305,6 +306,7 @@ fn parse_vless(input: &str) -> Result<VlessConfig> {
         address: host.to_string(),
         port,
         flow: params.remove("flow"),
+        encryption: params.remove("encryption").unwrap_or_else(|| "none".into()),
         security: params.remove("security").unwrap_or_default(),
         sni: params.remove("sni").unwrap_or_default(),
         public_key: params.remove("pbk").unwrap_or_default(),
@@ -427,6 +429,7 @@ mod tests {
             address: "1.2.3.4".into(),
             port: 443,
             flow: Some("xtls-rprx-vision".into()),
+            encryption: "none".into(),
             network: "tcp".into(),
             security: "reality".into(),
             sni: "www.example.com".into(),
