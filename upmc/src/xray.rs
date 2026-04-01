@@ -110,22 +110,23 @@ pub fn fetch_subscription(url: &str) -> Result<Vec<VlessConfig>> {
         );
     }
 
-    // 用 curl -k 获取订阅（跳过证书验证，自建面板证书常过期）
     let url_owned = url.to_string();
     let text = retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
         config::RETRY_BASE_DELAY_SECS,
         "获取代理订阅",
         || {
-            let output = std::process::Command::new("curl")
-                .args(["-sk", "--max-time", "30", &url_owned])
-                .creation_flags(config::CREATE_NO_WINDOW)
-                .output()
-                .context("curl 执行失败（系统需要 Windows 10 以上）")?;
-            if !output.status.success() {
-                bail!("获取订阅失败: curl 返回 {}", output.status);
-            }
-            String::from_utf8(output.stdout).context("订阅内容非 UTF-8")
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
+                .build()
+                .into();
+            let body = agent
+                .get(&url_owned)
+                .call()
+                .with_context(|| format!("获取订阅失败: {url_owned}"))?;
+            body.into_body()
+                .read_to_string()
+                .context("读取订阅内容失败")
         },
     )?;
 
