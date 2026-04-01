@@ -146,7 +146,8 @@ pub fn run_bootstrap(
 ///
 /// progress_start / progress_end 定义了这次下载在总进度条中占的范围。
 /// 例如 start=5, end=28 表示从 5% 到 28%。
-fn download_file(
+/// 传入 start == end == 0 可静默下载（不报告进度）。
+pub(crate) fn download_file(
     url: &str,
     dest: &Path,
     on_progress: &dyn Fn(Progress),
@@ -286,6 +287,32 @@ fn validate_downloaded_file(path: &Path) -> Result<()> {
 ///   servers.dat  → .minecraft/servers.dat
 ///   config/      → .minecraft/config/
 ///
+/// 解压 ZIP 到目标目录（覆盖已有文件）。
+pub(crate) fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
+    let file = fs::File::open(zip_path)
+        .with_context(|| format!("打开 ZIP 失败: {}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).context("读取 ZIP 失败")?;
+    fs::create_dir_all(dest)?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let name = entry.name().to_string();
+        if name.is_empty() || entry.is_dir() {
+            continue;
+        }
+        let out_path = dest.join(&name);
+        if !out_path.starts_with(dest) {
+            bail!("ZIP 条目包含非法路径: {name}");
+        }
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut outfile = fs::File::create(&out_path)?;
+        std::io::copy(&mut entry, &mut outfile)?;
+    }
+    Ok(())
+}
+
 /// 不会覆盖已存在的文件，以保留玩家的个人设置。
 fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
     let file = fs::File::open(zip_path)

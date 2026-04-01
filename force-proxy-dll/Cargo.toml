@@ -1,0 +1,20 @@
+[package]
+name = "force-proxy-dll"
+version = "0.1.0"
+edition = "2021"
+description = "Winsock2 hook DLL: forces TCP/UDP through SOCKS5 proxy"
+
+[lib]
+name = "force_proxy"
+crate-type = ["cdylib"]
+
+[dependencies]
+minhook = "0.9"
+
+[dependencies.windows-sys]
+version = "0.52"
+features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_System_LibraryLoader",
+]

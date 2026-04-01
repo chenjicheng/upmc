@@ -1,0 +1,19 @@
+[package]
+name = "discord-proxy-dll"
+version = "0.1.0"
+edition = "2021"
+description = "DWrite.dll proxy DLL for routing Discord voice through SOCKS5"
+
+[lib]
+name = "dwrite"
+crate-type = ["cdylib"]
+
+[dependencies.windows-sys]
+version = "0.52"
+features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Environment",
+    "Win32_UI_WindowsAndMessaging",
+]

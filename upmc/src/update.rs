@@ -16,6 +16,7 @@ use std::path::Path;
 use crate::bootstrap;
 use crate::config;
 use crate::config::ChannelConfig;
+use crate::discord_proxy;
 use crate::fabric;
 use crate::packwiz;
 use crate::selfupdate;
@@ -41,8 +42,8 @@ impl Progress {
 
 /// 更新结果枚举
 pub enum UpdateResult {
-    /// 更新成功完成
-    Success,
+    /// 更新成功完成，proxy_running 表示是否已自动启动了代理
+    Success { proxy_running: bool },
     /// 网络不可用，跳过更新（离线模式）
     Offline,
     /// 更新器自身已更新并重启，当前进程应直接退出（不启动 PCL2）
@@ -191,8 +192,22 @@ pub fn run_update(
         on_progress(Progress::new(95, "模组已是最新，跳过同步"));
     }
 
-    // 完成
-    on_progress(Progress::new(100, "更新完成，正在启动游戏..."));
+    // 如果之前已配置过代理，自动启动 Xray + 安装 DLL
+    // 如果 Xray 启动失败，不安装 DLL（避免 Discord 连不上网）
+    let proxy_running = if discord_proxy::is_configured(base_dir) {
+        on_progress(Progress::new(97, "正在启动代理..."));
+        match discord_proxy::auto_start(base_dir) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("自动启动代理失败: {e:#}");
+                false
+            }
+        }
+    } else {
+        false
+    };
 
-    Ok(UpdateResult::Success)
+    on_progress(Progress::new(100, "更新完成"));
+
+    Ok(UpdateResult::Success { proxy_running })
 }

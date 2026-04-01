@@ -235,6 +235,63 @@ LaunchArgumentWindowWidth=1280\r\n\
 LaunchArgumentWindowHeight=720\r\n\
 ";
 
+// ── Discord 代理 / Xray ──
+
+/// GitHub 下载代理前缀（与自更新模块使用同一镜像）
+pub const GITHUB_PROXY: &str = "https://gh.cjcx.org/";
+
+/// Xray GitHub 仓库
+pub const XRAY_GITHUB_REPO: &str = "XTLS/Xray-core";
+
+/// Xray Release 中 Windows 64-bit 的资产名
+pub const XRAY_ASSET_NAME: &str = "Xray-windows-64.zip";
+
+/// 代理订阅地址（VLESS REALITY）
+pub const SUBSCRIPTION_URL: &str = "https://23.165.248.63:2096/sub/j843pdmsfkjepp5u";
+
+/// Xray 本地 SOCKS5 监听端口
+pub const XRAY_SOCKS_PORT: u16 = 10808;
+
+/// Xray 文件存放目录（相对于 base_dir）
+pub const XRAY_DIR: &str = "updater/xray";
+
+/// 用户设置文件（相对于 base_dir）
+pub const USER_SETTINGS_FILE: &str = "updater/settings.json";
+
+/// 用户可修改的设置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSettings {
+    /// 是否劫持 UDP 流量（Discord 语音走代理）。默认 false。
+    #[serde(default)]
+    pub proxy_udp: bool,
+}
+
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self { proxy_udp: false }
+    }
+}
+
+/// 读取用户设置（文件不存在时返回默认值）。
+pub fn load_user_settings(base_dir: &Path) -> UserSettings {
+    let path = base_dir.join(USER_SETTINGS_FILE);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 保存用户设置。
+pub fn save_user_settings(base_dir: &Path, settings: &UserSettings) -> Result<()> {
+    let path = base_dir.join(USER_SETTINGS_FILE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(settings)?;
+    fs::write(&path, json)?;
+    Ok(())
+}
+
 // ── Java 查找 ──
 
 /// 自动查找 Java 可执行文件。

@@ -39,6 +39,10 @@ fn main() {
         res.compile().expect("编译 Windows 资源失败");
     }
 
+    // 内嵌的 DLL 变更时触发重新编译（include_bytes! 引用的文件）
+    println!("cargo:rerun-if-changed=../target/release/dwrite.dll");
+    println!("cargo:rerun-if-changed=../target/release/force_proxy.dll");
+
     // 将环境变量传递给 rustc，供 option_env!() / env!() 使用
     // CI 中设置，本地开发时不设置则使用默认值
 
