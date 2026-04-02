@@ -207,6 +207,22 @@ pub const HTTP_TIMEOUT_SECS: u64 = 30;
 /// 大文件下载超时
 pub const DOWNLOAD_TIMEOUT_SECS: u64 = 600;
 
+/// 创建用于小文件 API 请求的 HTTP Agent
+pub fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS)))
+        .build()
+        .into()
+}
+
+/// 创建用于大文件下载的 HTTP Agent（超时更长）
+pub fn download_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS)))
+        .build()
+        .into()
+}
+
 // ── 重试 ──
 
 /// 网络操作最大重试次数（含首次尝试）

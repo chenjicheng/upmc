@@ -16,7 +16,6 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::Duration;
 
 use crate::config;
 use crate::retry;
@@ -190,11 +189,7 @@ fn download_file_inner(
         fs::create_dir_all(parent)?;
     }
 
-    // 使用较长超时（大文件可能需要几分钟）
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS)))
-        .build()
-        .into();
+    let agent = config::download_agent();
 
     let response = agent
         .get(url)

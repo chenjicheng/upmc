@@ -331,14 +331,18 @@ impl UpdaterApp {
                 self.btn_discord_proxy.set_text("启用 Discord 代理");
             }
             FinishState::ProxyError(ref error_text) => {
+                self.proxy_running.set(false);
                 self.progress_bar.set_pos(0);
                 self.status_label
                     .set_text(&format!("代理设置失败: {error_text}"));
                 self.hint_label.set_text("请检查网络后重试");
                 self.hint_label.set_visible(true);
                 self.btn_launch_pcl.set_visible(true);
+                self.btn_launch_pcl.set_enabled(true);
                 self.btn_discord_proxy.set_visible(true);
+                self.btn_discord_proxy.set_enabled(true);
                 self.btn_settings.set_visible(true);
+                self.btn_settings.set_enabled(true);
                 if let Some(log) = log_text.as_deref() {
                     show_error_log_dialog(&self.window, log);
                 }

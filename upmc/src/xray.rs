@@ -111,10 +111,7 @@ pub fn fetch_subscription(url: &str) -> Result<Vec<VlessConfig>> {
     }
 
     let url_owned = url.to_string();
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
-        .build()
-        .into();
+    let agent = config::http_agent();
     let text = retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
         config::RETRY_BASE_DELAY_SECS,
@@ -308,10 +305,7 @@ fn test_socks5_connect(
 }
 
 fn fetch_latest_release() -> Result<GithubRelease> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
-        .build()
-        .into();
+    let agent = config::http_agent();
     retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
         config::RETRY_BASE_DELAY_SECS,
