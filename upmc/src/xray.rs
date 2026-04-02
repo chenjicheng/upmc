@@ -106,7 +106,7 @@ pub fn fetch_subscription(url: &str) -> Result<Vec<VlessConfig>> {
     if url.is_empty() {
         bail!(
             "未配置代理订阅地址。\n\
-             请在 config.rs 中设置 SUBSCRIPTION_URL"
+             请在构建时通过环境变量 UPMC_SUB_URL 注入"
         );
     }
 

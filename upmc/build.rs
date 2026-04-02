@@ -59,4 +59,8 @@ fn main() {
         .unwrap_or_else(|_| "stable".to_string())
         .to_lowercase();
     println!("cargo:rustc-env=UPMC_CHANNEL={channel}");
+
+    // UPMC_SUB_URL: 代理订阅地址，CI 从 GitHub Secrets 注入
+    // 未设置时 option_env!() 返回 None，回退为空字符串
+    println!("cargo:rerun-if-env-changed=UPMC_SUB_URL");
 }
