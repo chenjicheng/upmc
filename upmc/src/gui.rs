@@ -16,7 +16,7 @@ use native_windows_gui as nwg;
 use nwd::NwgUi;
 use nwg::NativeUi;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,8 @@ enum FinishState {
     ProxySuccess,
     /// Discord 代理设置失败
     ProxyError(String),
+    /// Discord 代理已停止
+    ProxyStopped,
 }
 
 /// 共享的进度状态，后台线程写入，GUI 线程读取。
@@ -163,6 +165,7 @@ pub struct UpdaterApp {
     // ── 内部状态 ──
     shared_state: Arc<Mutex<SharedState>>,
     base_dir: RefCell<PathBuf>,
+    proxy_running: Cell<bool>,
 }
 
 impl UpdaterApp {
@@ -278,6 +281,7 @@ impl UpdaterApp {
 
         match finish {
             FinishState::Success { proxy_running } => {
+                self.proxy_running.set(proxy_running);
                 if proxy_running {
                     self.show_action_buttons("更新完成，代理已就绪", Some("Xray 已在后台运行"));
                     self.btn_discord_proxy.set_text("停止代理");
@@ -314,21 +318,31 @@ impl UpdaterApp {
                 nwg::stop_thread_dispatch();
             }
             FinishState::ProxySuccess => {
+                self.proxy_running.set(true);
                 self.show_action_buttons(
                     "Discord 代理已启用",
                     Some("Xray 已在后台运行，Discord 已配置代理"),
                 );
                 self.btn_discord_proxy.set_text("停止代理");
             }
+            FinishState::ProxyStopped => {
+                self.proxy_running.set(false);
+                self.show_action_buttons("代理已停止", None);
+                self.btn_discord_proxy.set_text("启用 Discord 代理");
+            }
             FinishState::ProxyError(ref error_text) => {
+                self.proxy_running.set(false);
                 self.progress_bar.set_pos(0);
                 self.status_label
                     .set_text(&format!("代理设置失败: {error_text}"));
                 self.hint_label.set_text("请检查网络后重试");
                 self.hint_label.set_visible(true);
                 self.btn_launch_pcl.set_visible(true);
+                self.btn_launch_pcl.set_enabled(true);
                 self.btn_discord_proxy.set_visible(true);
+                self.btn_discord_proxy.set_enabled(true);
                 self.btn_settings.set_visible(true);
+                self.btn_settings.set_enabled(true);
                 if let Some(log) = log_text.as_deref() {
                     show_error_log_dialog(&self.window, log);
                 }
@@ -347,8 +361,11 @@ impl UpdaterApp {
             self.hint_label.set_visible(false);
         }
         self.btn_launch_pcl.set_visible(true);
+        self.btn_launch_pcl.set_enabled(true);
         self.btn_discord_proxy.set_visible(true);
+        self.btn_discord_proxy.set_enabled(true);
         self.btn_settings.set_visible(true);
+        self.btn_settings.set_enabled(true);
     }
 
     /// 「启动 PCL」按钮点击
@@ -379,18 +396,33 @@ impl UpdaterApp {
 
     /// 「启用 Discord 代理」/「停止代理」按钮点击
     fn on_enable_discord_proxy(&self) {
-        let btn_text = self.btn_discord_proxy.text();
         let base_dir = self.base_dir.borrow().clone();
 
-        // 如果当前是"停止代理"，同步执行停止操作
-        if btn_text.contains("停止") {
-            discord_proxy::stop(&base_dir);
-            self.show_action_buttons("代理已停止", None);
-            self.btn_discord_proxy.set_text("启用 Discord 代理");
+        if self.proxy_running.get() {
+            self.btn_discord_proxy.set_enabled(false);
+            self.status_label.set_text("正在停止代理...");
+
+            let state = Arc::clone(&self.shared_state);
+            let notice_sender = self.progress_notice.sender();
+
+            thread::spawn(move || {
+                let mut guard = PanicGuard {
+                    state: Arc::clone(&state),
+                    sender: notice_sender,
+                    completed: false,
+                };
+
+                discord_proxy::stop(&base_dir);
+
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.finish = Some(FinishState::ProxyStopped);
+                drop(s);
+                notice_sender.notice();
+                guard.completed = true;
+            });
             return;
         }
 
-        // 否则执行启用/配置流程
         self.btn_launch_pcl.set_visible(false);
         self.btn_discord_proxy.set_visible(false);
         self.btn_settings.set_visible(false);

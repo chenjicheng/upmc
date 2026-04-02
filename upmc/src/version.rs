@@ -116,10 +116,7 @@ pub fn fetch_remote_version() -> Result<RemoteVersion> {
 
 /// fetch_remote_version 的内部实现（单次尝试）。
 fn fetch_remote_version_inner() -> Result<RemoteVersion> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
-        .build()
-        .into();
+    let agent = config::http_agent();
 
     // 1. 拉取 server.json
     let body = agent

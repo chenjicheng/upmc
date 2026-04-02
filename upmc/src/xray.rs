@@ -111,15 +111,12 @@ pub fn fetch_subscription(url: &str) -> Result<Vec<VlessConfig>> {
     }
 
     let url_owned = url.to_string();
+    let agent = config::http_agent();
     let text = retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
         config::RETRY_BASE_DELAY_SECS,
         "获取代理订阅",
         || {
-            let agent: ureq::Agent = ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
-                .build()
-                .into();
             let body = agent
                 .get(&url_owned)
                 .call()
@@ -229,16 +226,20 @@ pub fn start(base_dir: &Path) -> Result<()> {
 /// 终止本程序启动的 Xray 进程。
 pub fn kill(base_dir: &Path) {
     let pid_path = base_dir.join(config::XRAY_DIR).join("xray.pid");
+    let mut killed = false;
     if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
             let _ = std::process::Command::new("taskkill")
                 .args(["/f", "/pid", &pid.to_string()])
                 .creation_flags(config::CREATE_NO_WINDOW)
                 .output();
+            killed = true;
         }
         let _ = std::fs::remove_file(&pid_path);
     }
-    std::thread::sleep(Duration::from_millis(500));
+    if killed {
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 // ── 内部实现 ───────────────────────────────────────────────
@@ -304,16 +305,12 @@ fn test_socks5_connect(
 }
 
 fn fetch_latest_release() -> Result<GithubRelease> {
+    let agent = config::http_agent();
     retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
         config::RETRY_BASE_DELAY_SECS,
         "获取 Xray 最新版本",
         || {
-            let agent: ureq::Agent = ureq::Agent::config_builder()
-                .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
-                .build()
-                .into();
-
             let url = format!(
                 "https://api.github.com/repos/{}/releases/latest",
                 config::XRAY_GITHUB_REPO

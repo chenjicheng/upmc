@@ -13,7 +13,6 @@ use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 use crate::config;
 use crate::retry;
@@ -337,10 +336,7 @@ fn download_vanilla_version_inner(mc_dir: &Path, mc_version: &str) -> Result<()>
     fs::create_dir_all(&ver_dir)
         .with_context(|| format!("创建版本目录失败: {}", ver_dir.display()))?;
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS)))
-        .build()
-        .into();
+    let agent = config::download_agent();
 
     // 1. 获取版本清单
     let manifest_str = agent

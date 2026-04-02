@@ -25,7 +25,6 @@ use std::fs;
 use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::config::{self, UpdateChannel};
 use crate::retry;
@@ -96,10 +95,7 @@ fn fetch_updater_info(channel: UpdateChannel) -> Result<UpdaterVersionInfo> {
 fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo> {
     let url = config::updater_version_url(channel);
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(config::HTTP_TIMEOUT_SECS)))
-        .build()
-        .into();
+    let agent = config::http_agent();
 
     let body = agent
         .get(url)
@@ -170,10 +166,7 @@ pub fn check_and_update(
 
     // 下载 + 校验：用闭包包裹，出错时统一清理临时文件
     let download_and_verify = || -> Result<()> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS)))
-            .build()
-            .into();
+        let agent = config::download_agent();
 
         let response = agent
             .get(download_url)
