@@ -398,11 +398,19 @@ impl UpdaterApp {
             let notice_sender = self.progress_notice.sender();
 
             thread::spawn(move || {
+                let mut guard = PanicGuard {
+                    state: Arc::clone(&state),
+                    sender: notice_sender,
+                    completed: false,
+                };
+
                 discord_proxy::stop(&base_dir);
+
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.finish = Some(FinishState::ProxyStopped);
                 drop(s);
                 notice_sender.notice();
+                guard.completed = true;
             });
             return;
         }
