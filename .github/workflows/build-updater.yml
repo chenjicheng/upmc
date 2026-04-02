@@ -89,6 +89,7 @@ jobs:
         env:
           UPMC_BUILD_ID: ${{ github.sha }}
           UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
+          UPMC_SUB_URL: ${{ secrets.UPMC_SUB_URL }}
         run: cargo build --release -p upmc
 
       - name: 准备产物并计算 SHA256
