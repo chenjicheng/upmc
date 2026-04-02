@@ -41,6 +41,8 @@ enum FinishState {
     ProxySuccess,
     /// Discord 代理设置失败
     ProxyError(String),
+    /// Discord 代理已停止
+    ProxyStopped,
 }
 
 /// 共享的进度状态，后台线程写入，GUI 线程读取。
@@ -320,6 +322,11 @@ impl UpdaterApp {
                 );
                 self.btn_discord_proxy.set_text("停止代理");
             }
+            FinishState::ProxyStopped => {
+                self.show_action_buttons("代理已停止", None);
+                self.btn_discord_proxy.set_text("启用 Discord 代理");
+                self.btn_discord_proxy.set_enabled(true);
+            }
             FinishState::ProxyError(ref error_text) => {
                 self.progress_bar.set_pos(0);
                 self.status_label
@@ -382,11 +389,21 @@ impl UpdaterApp {
         let btn_text = self.btn_discord_proxy.text();
         let base_dir = self.base_dir.borrow().clone();
 
-        // 如果当前是"停止代理"，同步执行停止操作
+        // 如果当前是"停止代理"，在后台线程执行
         if btn_text.contains("停止") {
-            discord_proxy::stop(&base_dir);
-            self.show_action_buttons("代理已停止", None);
-            self.btn_discord_proxy.set_text("启用 Discord 代理");
+            self.btn_discord_proxy.set_enabled(false);
+            self.status_label.set_text("正在停止代理...");
+
+            let state = Arc::clone(&self.shared_state);
+            let notice_sender = self.progress_notice.sender();
+
+            thread::spawn(move || {
+                discord_proxy::stop(&base_dir);
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.finish = Some(FinishState::ProxyStopped);
+                drop(s);
+                notice_sender.notice();
+            });
             return;
         }
 
