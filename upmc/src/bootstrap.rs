@@ -4,7 +4,6 @@
 
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -46,15 +45,13 @@ pub fn run_bootstrap(
             .with_context(|| format!("创建目录失败: {dir}"))?;
     }
 
-    let hashes = fetch_bootstrap_hashes()?;
-
     let pcl2_path = base_dir.join(config::PCL2_EXE);
     if !pcl2_path.exists() {
         let pcl2_url = downloads
             .pcl2_url
             .as_deref()
             .context("server.json 中未配置 PCL2 下载地址 (downloads.pcl2_url)")?;
-        let pcl2_sha256 = require_bootstrap_hash(&hashes, "pcl2_sha256")?;
+        let pcl2_sha256 = require_download_sha(downloads.pcl2_sha256.as_deref(), "pcl2_sha256")?;
 
         on_progress(Progress::new(31, "正在下载启动器..."));
         download_file_verified(pcl2_url, &pcl2_path, pcl2_sha256, on_progress, 31, 38)?;
@@ -67,7 +64,10 @@ pub fn run_bootstrap(
             .packwiz_bootstrap_url
             .as_deref()
             .context("server.json 中未配置 packwiz 下载地址 (downloads.packwiz_bootstrap_url)")?;
-        let packwiz_sha256 = require_bootstrap_hash(&hashes, "packwiz_bootstrap_sha256")?;
+        let packwiz_sha256 = require_download_sha(
+            downloads.packwiz_bootstrap_sha256.as_deref(),
+            "packwiz_bootstrap_sha256",
+        )?;
 
         on_progress(Progress::new(39, "正在下载模组同步器..."));
         download_file_verified(packwiz_url, &packwiz_jar, packwiz_sha256, on_progress, 39, 42)?;
@@ -80,7 +80,10 @@ pub fn run_bootstrap(
             .fabric_installer_url
             .as_deref()
             .context("server.json 中未配置 Fabric 安装器下载地址 (downloads.fabric_installer_url)")?;
-        let fabric_sha256 = require_bootstrap_hash(&hashes, "fabric_installer_sha256")?;
+        let fabric_sha256 = require_download_sha(
+            downloads.fabric_installer_sha256.as_deref(),
+            "fabric_installer_sha256",
+        )?;
 
         on_progress(Progress::new(43, "正在下载 Fabric 安装器..."));
         download_file_verified(fabric_url, &fabric_jar, fabric_sha256, on_progress, 43, 46)?;
@@ -97,7 +100,8 @@ pub fn run_bootstrap(
     let settings_marker = base_dir.join("updater/.settings_installed");
     if !settings_marker.exists() {
         if let Some(ref settings_url) = downloads.settings_url {
-            let settings_sha256 = require_bootstrap_hash(&hashes, "settings_sha256")?;
+            let settings_sha256 =
+                require_download_sha(downloads.settings_sha256.as_deref(), "settings_sha256")?;
 
             on_progress(Progress::new(48, "正在下载默认设置..."));
             let zip_path = base_dir.join("updater/settings-download.zip");
@@ -271,41 +275,10 @@ fn validate_downloaded_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn fetch_bootstrap_hashes() -> Result<HashMap<String, String>> {
-    let text = config::http_agent()
-        .get(config::REMOTE_SERVER_JSON_URL)
-        .call()
-        .context("无法获取下载校验信息")?
-        .body_mut()
-        .read_to_string()
-        .context("读取下载校验信息失败")?;
-
-    let value: serde_json::Value = serde_json::from_str(&text).context("解析下载校验信息失败")?;
-    let downloads = value
-        .get("downloads")
-        .and_then(|v| v.as_object())
-        .context("server.json 中缺少 downloads 对象")?;
-
-    let mut out = HashMap::new();
-    for key in [
-        "pcl2_sha256",
-        "packwiz_bootstrap_sha256",
-        "fabric_installer_sha256",
-        "settings_sha256",
-    ] {
-        if let Some(value) = downloads.get(key).and_then(|v| v.as_str()) {
-            out.insert(key.to_string(), value.to_string());
-        }
-    }
-    Ok(out)
-}
-
-fn require_bootstrap_hash<'a>(hashes: &'a HashMap<String, String>, key: &str) -> Result<&'a str> {
-    let value = hashes
-        .get(key)
-        .with_context(|| format!("server.json 中未配置下载校验值 downloads.{key}"))?;
+fn require_download_sha<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
+    let value = value.with_context(|| format!("server.json 中未配置下载校验值 downloads.{field_name}"))?;
     validate_sha256_hex(value)
-        .with_context(|| format!("server.json 中 downloads.{key} 不是有效 SHA256"))?;
+        .with_context(|| format!("server.json 中 downloads.{field_name} 不是有效 SHA256"))?;
     Ok(value)
 }
 
