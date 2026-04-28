@@ -29,7 +29,17 @@ use config::{ChannelConfig, UpdateChannel};
 use std::path::PathBuf;
 
 fn main() {
-    // 清理上次自更新残留的临时文件（.new / .old）
+    // 自更新 helper 模式必须最先处理，避免 helper 初始化 GUI 或执行正常更新流程。
+    match selfupdate::try_run_update_helper_from_args() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("自更新 helper 执行失败: {e:#}");
+            return;
+        }
+    }
+
+    // 清理上次自更新残留的临时文件（.new / .old / helper）
     selfupdate::cleanup_old_exe();
 
     // 获取安装基准路径（用户文档文件夹）
