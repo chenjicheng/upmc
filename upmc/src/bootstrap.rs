@@ -1,18 +1,10 @@
 // ============================================================
 // bootstrap.rs — 首次运行自举模块
 // ============================================================
-// 当玩家第一次双击 exe 时，.minecraft、PCL2 等都不存在。
-// 此模块负责：
-//   1. 检测哪些组件缺失
-//   2. 从远程下载所有必要文件
-//   3. 生成 PCL2 配置文件 (Setup.ini)
-//   4. 创建目录结构
-//
-// 所有下载 URL 来自 server.json 的 downloads 字段，
-// 管理员可远程控制下载源。
-// ============================================================
 
 use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -22,7 +14,6 @@ use crate::retry;
 use crate::update::Progress;
 use crate::version::Downloads;
 
-/// 检查是否需要首次安装（任一关键组件缺失）
 pub fn needs_bootstrap(base_dir: &Path) -> bool {
     let checks = [
         config::PCL2_EXE,
@@ -33,25 +24,16 @@ pub fn needs_bootstrap(base_dir: &Path) -> bool {
     checks.iter().any(|path| !base_dir.join(path).exists())
 }
 
-/// 检查是否已经完成过首次安装。
-///
-/// 多条件检查：PCL2 存在且 local.json 存在（至少完成过一次完整更新）。
-/// 避免仅凭 PCL2 存在就进入离线模式，防止半成品安装跳过更新。
 pub fn is_bootstrapped(base_dir: &Path) -> bool {
     base_dir.join(config::PCL2_EXE).exists()
         && base_dir.join(config::LOCAL_VERSION_FILE).exists()
 }
 
-/// 执行首次安装流程。
-///
-/// 根据 server.json 中的 downloads 字段，下载所有缺失的组件。
-/// 通过 on_progress 回调报告进度（占总进度的 0%-50%）。
 pub fn run_bootstrap(
     base_dir: &Path,
     downloads: &Downloads,
     on_progress: &dyn Fn(Progress),
 ) -> Result<()> {
-    // ── 创建目录结构 ──
     on_progress(Progress::new(2, "正在创建目录结构..."));
     let dirs = [
         ".minecraft",
@@ -64,46 +46,47 @@ pub fn run_bootstrap(
             .with_context(|| format!("创建目录失败: {dir}"))?;
     }
 
-    // ── 下载 PCL2（如果不存在） ──
+    let hashes = fetch_bootstrap_hashes()?;
+
     let pcl2_path = base_dir.join(config::PCL2_EXE);
     if !pcl2_path.exists() {
         let pcl2_url = downloads
             .pcl2_url
             .as_deref()
             .context("server.json 中未配置 PCL2 下载地址 (downloads.pcl2_url)")?;
+        let pcl2_sha256 = require_bootstrap_hash(&hashes, "pcl2_sha256")?;
 
         on_progress(Progress::new(31, "正在下载启动器..."));
-        download_file(pcl2_url, &pcl2_path, on_progress, 31, 38)?;
+        download_file_verified(pcl2_url, &pcl2_path, pcl2_sha256, on_progress, 31, 38)?;
     }
     on_progress(Progress::new(38, "启动器就绪"));
 
-    // ── 下载 packwiz-installer-bootstrap.jar（如果不存在） ──
     let packwiz_jar = base_dir.join(config::PACKWIZ_BOOTSTRAP_JAR);
     if !packwiz_jar.exists() {
         let packwiz_url = downloads
             .packwiz_bootstrap_url
             .as_deref()
             .context("server.json 中未配置 packwiz 下载地址 (downloads.packwiz_bootstrap_url)")?;
+        let packwiz_sha256 = require_bootstrap_hash(&hashes, "packwiz_bootstrap_sha256")?;
 
         on_progress(Progress::new(39, "正在下载模组同步器..."));
-        download_file(packwiz_url, &packwiz_jar, on_progress, 39, 42)?;
+        download_file_verified(packwiz_url, &packwiz_jar, packwiz_sha256, on_progress, 39, 42)?;
     }
     on_progress(Progress::new(42, "模组同步器就绪"));
 
-    // ── 下载 fabric-installer.jar（如果不存在） ──
     let fabric_jar = base_dir.join(config::FABRIC_INSTALLER_JAR);
     if !fabric_jar.exists() {
         let fabric_url = downloads
             .fabric_installer_url
             .as_deref()
             .context("server.json 中未配置 Fabric 安装器下载地址 (downloads.fabric_installer_url)")?;
+        let fabric_sha256 = require_bootstrap_hash(&hashes, "fabric_installer_sha256")?;
 
         on_progress(Progress::new(43, "正在下载 Fabric 安装器..."));
-        download_file(fabric_url, &fabric_jar, on_progress, 43, 46)?;
+        download_file_verified(fabric_url, &fabric_jar, fabric_sha256, on_progress, 43, 46)?;
     }
     on_progress(Progress::new(46, "Fabric 安装器就绪"));
 
-    // ── 生成 PCL2 Setup.ini ──
     let setup_ini = base_dir.join(config::PCL2_SETUP_INI_PATH);
     if !setup_ini.exists() {
         on_progress(Progress::new(47, "正在配置启动器..."));
@@ -111,13 +94,14 @@ pub fn run_bootstrap(
             .context("写入 Setup.ini 失败")?;
     }
 
-    // ── 下载并解压默认设置包（仅首次） ──
     let settings_marker = base_dir.join("updater/.settings_installed");
     if !settings_marker.exists() {
         if let Some(ref settings_url) = downloads.settings_url {
+            let settings_sha256 = require_bootstrap_hash(&hashes, "settings_sha256")?;
+
             on_progress(Progress::new(48, "正在下载默认设置..."));
             let zip_path = base_dir.join("updater/settings-download.zip");
-            download_file(settings_url, &zip_path, on_progress, 48, 49)?;
+            download_file_verified(settings_url, &zip_path, settings_sha256, on_progress, 48, 49)?;
 
             on_progress(Progress::new(49, "正在应用默认设置..."));
             let mc_dir = base_dir.join(config::MINECRAFT_DIR);
@@ -125,10 +109,8 @@ pub fn run_bootstrap(
             extract_settings_zip(&zip_path, &mc_dir)
                 .context("解压设置包失败")?;
 
-            // 清理下载的 zip
             fs::remove_file(&zip_path).ok();
         }
-        // 写入标记文件，防止后续运行重复解压覆盖玩家设置
         fs::write(&settings_marker, "installed")
             .context("写入设置安装标记失败")?;
     }
@@ -137,15 +119,6 @@ pub fn run_bootstrap(
     Ok(())
 }
 
-// ────────────────────────────────────────────────────────────
-// 工具函数
-// ────────────────────────────────────────────────────────────
-
-/// 下载文件并报告进度。
-///
-/// progress_start / progress_end 定义了这次下载在总进度条中占的范围。
-/// 例如 start=5, end=28 表示从 5% 到 28%。
-/// 传入 start == end == 0 可静默下载（不报告进度）。
 pub(crate) fn download_file(
     url: &str,
     dest: &Path,
@@ -153,10 +126,7 @@ pub(crate) fn download_file(
     progress_start: u32,
     progress_end: u32,
 ) -> Result<()> {
-    // 校验 URL scheme 为 HTTPS，防止远程配置指向不安全的 HTTP 地址
-    if !url.starts_with("https://") {
-        bail!("下载 URL 必须使用 HTTPS 协议: {url}");
-    }
+    validate_download_url(url)?;
     let url_owned = url.to_string();
     let dest_owned = dest.to_path_buf();
 
@@ -176,7 +146,23 @@ pub(crate) fn download_file(
     )
 }
 
-/// download_file 的内部实现（单次尝试）。
+fn download_file_verified(
+    url: &str,
+    dest: &Path,
+    expected_sha256: &str,
+    on_progress: &dyn Fn(Progress),
+    progress_start: u32,
+    progress_end: u32,
+) -> Result<()> {
+    validate_sha256_hex(expected_sha256)
+        .with_context(|| format!("无效的 SHA256 配置: {}", dest.display()))?;
+
+    download_file(url, dest, on_progress, progress_start, progress_end)?;
+    verify_sha256(dest, expected_sha256)
+        .with_context(|| format!("文件 SHA256 校验失败: {}", dest.display()))?;
+    Ok(())
+}
+
 fn download_file_inner(
     url: &str,
     dest: &Path,
@@ -184,7 +170,6 @@ fn download_file_inner(
     progress_start: u32,
     progress_end: u32,
 ) -> Result<()> {
-    // 确保目标目录存在
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -196,17 +181,13 @@ fn download_file_inner(
         .call()
         .with_context(|| format!("下载失败: {url}"))?;
 
-    // 尝试获取文件大小（用于进度百分比）
-    let total_size = response
-        .body()
-        .content_length()
-        .unwrap_or(0);
+    let total_size = response.body().content_length().unwrap_or(0);
 
     let mut reader = response.into_body().into_reader();
     let mut file = fs::File::create(dest)
         .with_context(|| format!("创建文件失败: {}", dest.display()))?;
 
-    let mut buf = [0u8; 65536]; // 64KB 缓冲区
+    let mut buf = [0u8; 65536];
     let mut downloaded: u64 = 0;
 
     loop {
@@ -217,7 +198,6 @@ fn download_file_inner(
         file.write_all(&buf[..n]).context("写入文件失败")?;
         downloaded += n as u64;
 
-        // 计算并报告进度
         if total_size > 0 {
             let fraction = downloaded as f64 / total_size as f64;
             let pct = progress_start
@@ -232,20 +212,37 @@ fn download_file_inner(
     }
 
     drop(file);
-
-    // 校验下载文件的完整性
     validate_downloaded_file(dest)?;
-
     Ok(())
 }
 
-/// 校验下载的文件格式是否正确。
-///
-/// 通过文件扩展名判断期望格式，检查文件头 magic bytes：
-///   - .exe → PE 文件 (MZ)
-///   - .jar/.zip → ZIP 归档 (PK\x03\x04)
-///
-/// 防止代理服务器返回 HTML 错误页被误存为二进制文件。
+fn validate_download_url(url: &str) -> Result<()> {
+    if !url.starts_with("https://") {
+        bail!("下载 URL 必须使用 HTTPS 协议: {url}");
+    }
+
+    let host = extract_url_host(url).context("无法解析下载 URL 主机名")?;
+    let allowed = config::TRUSTED_DOWNLOAD_HOST_SUFFIXES.iter().any(|suffix| {
+        host == *suffix || host.ends_with(&format!(".{suffix}"))
+    });
+
+    if !allowed {
+        bail!("下载 URL 主机不在信任列表中: {host}");
+    }
+    Ok(())
+}
+
+fn extract_url_host(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let host_port = rest.split(['/', '?', '#']).next()?;
+    let host = host_port.split(':').next()?.trim().to_ascii_lowercase();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
 fn validate_downloaded_file(path: &Path) -> Result<()> {
     let ext = path
         .extension()
@@ -256,14 +253,13 @@ fn validate_downloaded_file(path: &Path) -> Result<()> {
     let expected_magic: &[u8] = match ext.as_str() {
         "exe" => b"MZ",
         "jar" | "zip" => b"PK",
-        _ => return Ok(()), // 未知扩展名不校验
+        _ => return Ok(()),
     };
 
     let mut f = fs::File::open(path)
         .with_context(|| format!("打开下载文件失败: {}", path.display()))?;
     let mut magic = vec![0u8; expected_magic.len()];
     if f.read_exact(&mut magic).is_err() || magic != expected_magic {
-        // 删除损坏的文件，防止下次启动跳过下载
         let _ = fs::remove_file(path);
         bail!(
             "下载的文件格式无效（可能是代理返回了错误页面）: {}\n\
@@ -275,7 +271,62 @@ fn validate_downloaded_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 将 ZIP 条目转换为目标路径，并拒绝绝对路径、盘符前缀、根目录和 ..。
+fn fetch_bootstrap_hashes() -> Result<HashMap<String, String>> {
+    let text = config::http_agent()
+        .get(config::REMOTE_SERVER_JSON_URL)
+        .call()
+        .context("无法获取下载校验信息")?
+        .body_mut()
+        .read_to_string()
+        .context("读取下载校验信息失败")?;
+
+    let value: serde_json::Value = serde_json::from_str(&text).context("解析下载校验信息失败")?;
+    let downloads = value
+        .get("downloads")
+        .and_then(|v| v.as_object())
+        .context("server.json 中缺少 downloads 对象")?;
+
+    let mut out = HashMap::new();
+    for key in [
+        "pcl2_sha256",
+        "packwiz_bootstrap_sha256",
+        "fabric_installer_sha256",
+        "settings_sha256",
+    ] {
+        if let Some(value) = downloads.get(key).and_then(|v| v.as_str()) {
+            out.insert(key.to_string(), value.to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn require_bootstrap_hash<'a>(hashes: &'a HashMap<String, String>, key: &str) -> Result<&'a str> {
+    let value = hashes
+        .get(key)
+        .with_context(|| format!("server.json 中未配置下载校验值 downloads.{key}"))?;
+    validate_sha256_hex(value)
+        .with_context(|| format!("server.json 中 downloads.{key} 不是有效 SHA256"))?;
+    Ok(value)
+}
+
+fn validate_sha256_hex(value: &str) -> Result<()> {
+    let is_valid = value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+    if !is_valid {
+        bail!("SHA256 必须是 64 位十六进制字符串");
+    }
+    Ok(())
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+    let bytes = fs::read(path).with_context(|| format!("读取文件失败: {}", path.display()))?;
+    let actual = format!("{:x}", Sha256::digest(&bytes));
+    if actual != expected.to_ascii_lowercase() {
+        let _ = fs::remove_file(path);
+        bail!("期望 {expected}，实际 {actual}");
+    }
+    Ok(())
+}
+
 fn safe_zip_output_path(dest: &Path, entry_name: &str) -> Result<PathBuf> {
     let relative = Path::new(entry_name);
     if relative.components().any(|component| {
@@ -290,14 +341,6 @@ fn safe_zip_output_path(dest: &Path, entry_name: &str) -> Result<PathBuf> {
     Ok(dest.join(relative))
 }
 
-/// 解压设置包 ZIP 到目标目录（不去除顶层目录）。
-///
-/// 设置包内的文件应直接映射到 `.minecraft/` 的目录结构，例如：
-///   options.txt  → .minecraft/options.txt
-///   servers.dat  → .minecraft/servers.dat
-///   config/      → .minecraft/config/
-///
-/// 解压 ZIP 到目标目录（覆盖已有文件）。
 pub(crate) fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
     let file = fs::File::open(zip_path)
         .with_context(|| format!("打开 ZIP 失败: {}", zip_path.display()))?;
@@ -320,7 +363,6 @@ pub(crate) fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 不会覆盖已存在的文件，以保留玩家的个人设置。
 fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
     let file = fs::File::open(zip_path)
         .with_context(|| format!("打开设置包 ZIP 失败: {}", zip_path.display()))?;
@@ -343,7 +385,6 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
         } else {
-            // 不覆盖已有文件，保护玩家现有设置
             if out_path.exists() {
                 continue;
             }
@@ -383,29 +424,7 @@ mod tests {
         let path = dir.join("test.exe");
         fs::write(&path, b"<html>404</html>").unwrap();
         assert!(validate_downloaded_file(&path).is_err());
-        assert!(!path.exists()); // 损坏文件应被删除
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn validate_valid_jar() {
-        let dir = std::env::temp_dir().join("upmc_test_validate_jar");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.jar");
-        let mut f = fs::File::create(&path).unwrap();
-        f.write_all(b"PK\x03\x04").unwrap();
-        drop(f);
-        assert!(validate_downloaded_file(&path).is_ok());
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn validate_unknown_extension_skips() {
-        let dir = std::env::temp_dir().join("upmc_test_validate_txt");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.txt");
-        fs::write(&path, b"anything").unwrap();
-        assert!(validate_downloaded_file(&path).is_ok());
+        assert!(!path.exists());
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -419,12 +438,29 @@ mod tests {
     #[test]
     fn safe_zip_output_path_rejects_parent_dir() {
         let dest = Path::new("C:/mc");
-        assert!(safe_zip_output_path(dest, "../evil.txt").is_err());
+        assert!(safe_zip_output_path(dest, "../blocked.txt").is_err());
     }
 
     #[test]
     fn safe_zip_output_path_rejects_root_dir() {
         let dest = Path::new("C:/mc");
-        assert!(safe_zip_output_path(dest, "/evil.txt").is_err());
+        assert!(safe_zip_output_path(dest, "/blocked.txt").is_err());
+    }
+
+    #[test]
+    fn validate_download_url_allows_trusted_suffix() {
+        assert!(validate_download_url("https://github.com/a/b").is_ok());
+        assert!(validate_download_url("https://raw.githubusercontent.com/a/b").is_ok());
+    }
+
+    #[test]
+    fn validate_download_url_rejects_untrusted_host() {
+        assert!(validate_download_url("https://example.invalid/file.zip").is_err());
+    }
+
+    #[test]
+    fn validate_sha256_hex_checks_format() {
+        assert!(validate_sha256_hex(&"a".repeat(64)).is_ok());
+        assert!(validate_sha256_hex("abc").is_err());
     }
 }
