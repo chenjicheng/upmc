@@ -15,7 +15,7 @@
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use crate::config;
 use crate::retry;
@@ -275,6 +275,21 @@ fn validate_downloaded_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 将 ZIP 条目转换为目标路径，并拒绝绝对路径、盘符前缀、根目录和 ..。
+fn safe_zip_output_path(dest: &Path, entry_name: &str) -> Result<PathBuf> {
+    let relative = Path::new(entry_name);
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    }) {
+        bail!("ZIP 条目包含非法路径: {entry_name}");
+    }
+
+    Ok(dest.join(relative))
+}
+
 /// 解压设置包 ZIP 到目标目录（不去除顶层目录）。
 ///
 /// 设置包内的文件应直接映射到 `.minecraft/` 的目录结构，例如：
@@ -295,10 +310,7 @@ pub(crate) fn extract_zip(zip_path: &Path, dest: &Path) -> Result<()> {
         if name.is_empty() || entry.is_dir() {
             continue;
         }
-        let out_path = dest.join(&name);
-        if !out_path.starts_with(dest) {
-            bail!("ZIP 条目包含非法路径: {name}");
-        }
+        let out_path = safe_zip_output_path(dest, &name)?;
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -326,12 +338,7 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
             continue;
         }
 
-        let out_path = dest.join(&name);
-
-        // 安全检查：防止 ZIP 路径遍历攻击
-        if !out_path.starts_with(dest) {
-            bail!("设置包 ZIP 条目包含非法路径: {name}");
-        }
+        let out_path = safe_zip_output_path(dest, &name)?;
 
         if entry.is_dir() {
             fs::create_dir_all(&out_path)?;
@@ -400,5 +407,24 @@ mod tests {
         fs::write(&path, b"anything").unwrap();
         assert!(validate_downloaded_file(&path).is_ok());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn safe_zip_output_path_accepts_relative_path() {
+        let dest = Path::new("C:/mc");
+        let out = safe_zip_output_path(dest, "config/options.txt").unwrap();
+        assert!(out.ends_with("config/options.txt"));
+    }
+
+    #[test]
+    fn safe_zip_output_path_rejects_parent_dir() {
+        let dest = Path::new("C:/mc");
+        assert!(safe_zip_output_path(dest, "../evil.txt").is_err());
+    }
+
+    #[test]
+    fn safe_zip_output_path_rejects_root_dir() {
+        let dest = Path::new("C:/mc");
+        assert!(safe_zip_output_path(dest, "/evil.txt").is_err());
     }
 }
