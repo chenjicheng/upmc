@@ -92,11 +92,25 @@ jobs:
           UPMC_SUB_URL: ${{ secrets.UPMC_SUB_URL }}
         run: cargo build --release -p upmc
 
-      - name: 准备产物并计算 SHA256
+      - name: 准备产物
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
         shell: pwsh
         run: |
-          Copy-Item target/release/upmc.exe updater.exe
+          Copy-Item target/release/upmc.exe updater.exe -Force
+
+      - name: 可选 Authenticode 签名
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_CERT_BASE64: ${{ secrets.WINDOWS_SIGN_CERT_BASE64 }}
+          WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGN_CERT_PASSWORD }}
+        run: |
+          ./scripts/sign-updater.ps1 -FilePath updater.exe
+
+      - name: 计算 SHA256
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+        shell: pwsh
+        run: |
           $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
           $hash = (Get-FileHash updater.exe -Algorithm SHA256).Hash.ToLower()
           Write-Host "updater.exe: $size MB, SHA256: $hash"
@@ -148,7 +162,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 产物已在"准备产物"步骤中复制
+          # 产物已在"准备产物"步骤中复制并可选签名
           $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
           Write-Host "产物大小: $size MB"
           # 创建或更新 dev-latest pre-release
