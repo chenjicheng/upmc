@@ -18,6 +18,20 @@ use std::process::Command;
 pub const REMOTE_SERVER_JSON_URL: &str =
     "https://update.mc.chenjicheng.cn/server.json";
 
+/// 允许远程配置引用的下载域名后缀。
+///
+/// 远程 server.json 能控制首次安装下载项，因此必须限制下载来源，
+/// 避免被篡改后变成任意文件下载器。
+pub const TRUSTED_DOWNLOAD_HOST_SUFFIXES: &[&str] = &[
+    "chenjicheng.cn",
+    "github.com",
+    "githubusercontent.com",
+    "objects.githubusercontent.com",
+    "gh.cjcx.org",
+    "bmclapi2.bangbang93.com",
+    "maven.fabricmc.net",
+];
+
 /// 更新器版本信息 URL — 稳定通道（GitHub Pages 托管，upmc 仓库）
 /// 返回 JSON: { "version": "x.y.z", "download_url": "..." }
 pub const UPDATER_VERSION_URL: &str =
