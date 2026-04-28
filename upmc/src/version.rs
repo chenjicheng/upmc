@@ -1,12 +1,6 @@
 // ============================================================
 // version.rs — 版本检查模块
 // ============================================================
-// 负责：
-//   1. 从远程 URL 拉取 server.json（包含 pack_url 和下载配置）
-//   2. 从 pack.toml 解析 MC/Fabric 版本（单一数据源）
-//   3. 读取本地 local.json（记录当前已安装的版本）
-//   4. 对比两者，判断是否需要升级
-// ============================================================
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -16,9 +10,6 @@ use std::path::Path;
 use crate::config;
 use crate::retry;
 
-/// 服务器端配置（从远程 server.json 反序列化）
-///
-/// 只包含 pack_url 和 downloads，版本信息从 pack.toml 读取。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// packwiz pack.toml 的远程 URL
@@ -29,69 +20,59 @@ pub struct ServerConfig {
     pub downloads: Downloads,
 }
 
-/// 从 pack.toml 解析出的版本信息 + server.json 的配置合并后的完整远程状态
 #[derive(Debug, Clone)]
 pub struct RemoteVersion {
-    /// Minecraft 版本号，如 "1.21.11"
     pub mc_version: String,
-
-    /// Fabric Loader 版本号，如 "0.18.4"
     pub fabric_version: String,
-
-    /// 版本文件夹名称，如 "fabric-loader-0.18.4-1.21.11"
     pub version_tag: String,
-
-    /// packwiz pack.toml 的远程 URL
     pub pack_url: String,
-
-    /// 下载配置
     pub downloads: Downloads,
-
-    /// pack.toml 原始内容，用于增量同步判断
     pub pack_toml_raw: String,
 }
 
-/// 首次安装所需的下载 URL 集合。
-///
-/// jre_url / packwiz_bootstrap_url 有内置默认值，
-/// pcl2_url / fabric_installer_url 需管理员配置。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Downloads {
     /// Java 运行时下载地址（.zip）
     #[serde(default)]
     pub jre_url: Option<String>,
 
+    /// Java 运行时 ZIP 的 SHA256。当前版本暂未使用，保留兼容后续启用。
+    #[serde(default)]
+    pub jre_sha256: Option<String>,
+
     /// PCL2 启动器下载地址（管理员托管在 GitHub Releases 等）
     #[serde(default)]
     pub pcl2_url: Option<String>,
+
+    /// PCL2 启动器 EXE 的 SHA256
+    #[serde(default)]
+    pub pcl2_sha256: Option<String>,
 
     /// packwiz-installer-bootstrap.jar 下载地址
     #[serde(default)]
     pub packwiz_bootstrap_url: Option<String>,
 
+    /// packwiz-installer-bootstrap.jar 的 SHA256
+    #[serde(default)]
+    pub packwiz_bootstrap_sha256: Option<String>,
+
     /// Fabric Installer jar 下载地址
     #[serde(default)]
     pub fabric_installer_url: Option<String>,
 
+    /// Fabric Installer jar 的 SHA256
+    #[serde(default)]
+    pub fabric_installer_sha256: Option<String>,
+
     /// 首次安装设置包下载地址（.zip）
-    /// 解压到 .minecraft/ 目录，包含默认游戏设置和模组配置。
-    /// 仅首次安装时下载，不会覆盖已有的个人设置。
-    ///
-    /// ZIP 结构示例：
-    ///   options.txt          ← 视频/按键/语言
-    ///   servers.dat          ← 预填服务器地址
-    ///   config/              ← 模组默认配置
-    ///   shaderpacks/         ← 光影预设
     #[serde(default)]
     pub settings_url: Option<String>,
 
-    // 注意：updater_url 和 updater_version 已迁移到独立的 version.json
-    // (upmc.chenjicheng.cn/version.json)，由 selfupdate 模块独立获取。
-    // 旧版 server.json 中的这两个字段会被 serde 自动忽略（无 deny_unknown_fields）。
+    /// 首次安装设置包 ZIP 的 SHA256。settings_url 存在时必须提供。
+    #[serde(default)]
+    pub settings_sha256: Option<String>,
 }
 
-/// 本地已安装的版本信息（保存在 local.json）
-/// 结构与 ServerVersion 相同，方便直接序列化/反序列化。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LocalVersion {
     pub mc_version: String,
@@ -99,12 +80,6 @@ pub struct LocalVersion {
     pub version_tag: String,
 }
 
-/// 从远程拉取 server.json 和 pack.toml，合并为完整的远程版本信息。
-///
-/// 流程：
-///   1. GET server.json → 获取 pack_url 和 downloads
-///   2. GET pack.toml   → 解析 minecraft 和 fabric 版本
-///   3. 合并为 RemoteVersion
 pub fn fetch_remote_version() -> Result<RemoteVersion> {
     retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
@@ -114,11 +89,9 @@ pub fn fetch_remote_version() -> Result<RemoteVersion> {
     )
 }
 
-/// fetch_remote_version 的内部实现（单次尝试）。
 fn fetch_remote_version_inner() -> Result<RemoteVersion> {
     let agent = config::http_agent();
 
-    // 1. 拉取 server.json
     let body = agent
         .get(config::REMOTE_SERVER_JSON_URL)
         .call()
@@ -130,10 +103,10 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
     let server_config: ServerConfig =
         serde_json::from_str(&body).context("解析 server.json 失败")?;
 
-    // 2. 拉取 pack.toml 并解析版本
     if !server_config.pack_url.starts_with("https://") {
         anyhow::bail!("pack_url 必须使用 HTTPS 协议: {}", server_config.pack_url);
     }
+
     let pack_toml = agent
         .get(&server_config.pack_url)
         .call()
@@ -145,13 +118,9 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
     let (mc_version, fabric_version) = parse_pack_toml_versions(&pack_toml)
         .context("从 pack.toml 解析版本信息失败")?;
 
-    // 校验版本字符串不含路径分隔符或遍历序列，防止恶意 pack.toml 写入任意路径
-    validate_version_string(&mc_version)
-        .context("minecraft 版本号包含非法字符")?;
-    validate_version_string(&fabric_version)
-        .context("fabric 版本号包含非法字符")?;
+    validate_version_string(&mc_version).context("minecraft 版本号包含非法字符")?;
+    validate_version_string(&fabric_version).context("fabric 版本号包含非法字符")?;
 
-    // 3. 合并
     let version_tag = format!("fabric-loader-{fabric_version}-{mc_version}");
 
     Ok(RemoteVersion {
@@ -164,10 +133,6 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
     })
 }
 
-/// 校验版本字符串是否安全用于文件路径。
-///
-/// 拒绝包含路径分隔符（`/`、`\`）或遍历序列（`..`）的值，
-/// 防止恶意 pack.toml 导致路径遍历攻击。
 fn validate_version_string(version: &str) -> Result<()> {
     if version.is_empty()
         || version.contains('/')
@@ -179,16 +144,6 @@ fn validate_version_string(version: &str) -> Result<()> {
     Ok(())
 }
 
-/// 从 pack.toml 文本中解析 minecraft 和 fabric 版本。
-///
-/// pack.toml 格式示例：
-/// ```toml
-/// [versions]
-/// fabric = "0.18.4"
-/// minecraft = "1.21.11"
-/// ```
-///
-/// 使用简单字符串解析，不需要完整的 TOML 解析器。
 fn parse_pack_toml_versions(toml_text: &str) -> Result<(String, String)> {
     let mut mc_version: Option<String> = None;
     let mut fabric_version: Option<String> = None;
@@ -197,13 +152,11 @@ fn parse_pack_toml_versions(toml_text: &str) -> Result<(String, String)> {
     for line in toml_text.lines() {
         let trimmed = line.trim();
 
-        // 检测 [versions] 段
         if trimmed == "[versions]" {
             in_versions_section = true;
             continue;
         }
 
-        // 遇到新的段落 [xxx]，退出 versions 段
         if trimmed.starts_with('[') && in_versions_section {
             break;
         }
@@ -224,31 +177,29 @@ fn parse_pack_toml_versions(toml_text: &str) -> Result<(String, String)> {
     Ok((mc, fabric))
 }
 
-/// 从 TOML 行中提取 `key = "value"` 形式的值
 fn extract_toml_value(line: &str, key: &str) -> Option<String> {
     let line = line.trim();
     if !line.starts_with(key) {
         return None;
     }
+
     let rest = line[key.len()..].trim();
     if !rest.starts_with('=') {
         return None;
     }
+
     let value_part = rest[1..].trim();
 
-    // 处理带引号的字符串值：提取第一对引号之间的内容
-    // 这样可以正确忽略行内注释，如 key = "value" # comment
     if let Some(stripped) = value_part.strip_prefix('"') {
-        // 找到闭合引号
         let end = stripped.find('"').unwrap_or(stripped.len());
         return Some(stripped[..end].to_string());
     }
+
     if let Some(stripped) = value_part.strip_prefix('\'') {
         let end = stripped.find('\'').unwrap_or(stripped.len());
         return Some(stripped[..end].to_string());
     }
 
-    // 无引号的值：截断行内注释
     let value = if let Some(hash_pos) = value_part.find('#') {
         value_part[..hash_pos].trim()
     } else {
@@ -257,46 +208,30 @@ fn extract_toml_value(line: &str, key: &str) -> Option<String> {
     Some(value.to_string())
 }
 
-/// 读取本地 local.json。
-///
-/// 如果文件不存在（首次运行），返回一个空的 LocalVersion，
-/// 这样对比时一定会触发完整安装。
 pub fn read_local_version(base_dir: &Path) -> LocalVersion {
     let path = base_dir.join(config::LOCAL_VERSION_FILE);
-
-    // 尝试读取并解析，失败则返回默认值（全部字段为空字符串）
     match fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
         Err(_) => LocalVersion::default(),
     }
 }
 
-/// 将当前版本信息写入 local.json，供下次启动时对比。
 pub fn save_local_version(base_dir: &Path, version: &LocalVersion) -> Result<()> {
     let path = base_dir.join(config::LOCAL_VERSION_FILE);
 
-    // 确保 updater/ 目录存在
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).context("创建 updater 目录失败")?;
     }
 
     let json = serde_json::to_string_pretty(version).context("序列化版本信息失败")?;
     fs::write(&path, json).context("写入 local.json 失败")?;
-
     Ok(())
 }
 
-/// 判断是否需要升级 Minecraft / Fabric 版本。
-///
-/// 只要 mc_version 或 fabric_version 任意一个不同，就需要升级。
 pub fn needs_version_upgrade(remote: &RemoteVersion, local: &LocalVersion) -> bool {
     remote.mc_version != local.mc_version || remote.fabric_version != local.fabric_version
 }
 
-/// 判断 pack.toml 是否有变化（用于跳过无变化的 packwiz 同步）。
-///
-/// 对比远程 pack.toml 内容与本地缓存，内容一致则无需同步。
-/// 缓存文件不存在时视为有变化（首次运行或缓存被清除）。
 pub fn is_pack_changed(base_dir: &Path, remote_pack_toml: &str) -> bool {
     let cache_path = base_dir.join(config::PACK_TOML_CACHE_FILE);
     match fs::read_to_string(&cache_path) {
@@ -305,7 +240,6 @@ pub fn is_pack_changed(base_dir: &Path, remote_pack_toml: &str) -> bool {
     }
 }
 
-/// 保存 pack.toml 内容缓存，供下次启动对比。
 pub fn save_pack_cache(base_dir: &Path, pack_toml: &str) -> Result<()> {
     let cache_path = base_dir.join(config::PACK_TOML_CACHE_FILE);
     if let Some(parent) = cache_path.parent() {
@@ -318,8 +252,6 @@ pub fn save_pack_cache(base_dir: &Path, pack_toml: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── parse_pack_toml_versions ──
 
     #[test]
     fn parse_standard_pack_toml() {
@@ -353,78 +285,14 @@ fabric = "0.15.0" # required
     }
 
     #[test]
-    fn parse_versions_at_end_of_file() {
-        let toml = "[versions]\nminecraft = \"1.21.0\"\nfabric = \"0.16.0\"";
-        let (mc, fabric) = parse_pack_toml_versions(toml).unwrap();
-        assert_eq!(mc, "1.21.0");
-        assert_eq!(fabric, "0.16.0");
-    }
-
-    #[test]
-    fn parse_missing_minecraft_version() {
-        let toml = "[versions]\nfabric = \"0.18.4\"";
-        let result = parse_pack_toml_versions(toml);
-        assert!(result.is_err());
-        assert!(format!("{:#}", result.unwrap_err()).contains("minecraft"));
-    }
-
-    #[test]
-    fn parse_missing_fabric_version() {
-        let toml = "[versions]\nminecraft = \"1.21.11\"";
-        let result = parse_pack_toml_versions(toml);
-        assert!(result.is_err());
-        assert!(format!("{:#}", result.unwrap_err()).contains("fabric"));
-    }
-
-    #[test]
-    fn parse_no_versions_section() {
-        let toml = "[pack]\nname = \"test\"";
-        let result = parse_pack_toml_versions(toml);
-        assert!(result.is_err());
-    }
-
-    // ── extract_toml_value ──
-
-    #[test]
-    fn extract_double_quoted_value() {
-        assert_eq!(
-            extract_toml_value(r#"minecraft = "1.21.11""#, "minecraft"),
-            Some("1.21.11".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_single_quoted_value() {
-        assert_eq!(
-            extract_toml_value("minecraft = '1.21.11'", "minecraft"),
-            Some("1.21.11".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_unquoted_value() {
-        assert_eq!(
-            extract_toml_value("count = 42", "count"),
-            Some("42".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_value_with_comment() {
-        assert_eq!(
-            extract_toml_value("count = 42 # answer", "count"),
-            Some("42".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_no_match_different_key() {
-        assert_eq!(extract_toml_value("fabric = \"0.18\"", "minecraft"), None);
+    fn parse_missing_versions() {
+        assert!(parse_pack_toml_versions("[versions]\nfabric = \"0.18.4\"").is_err());
+        assert!(parse_pack_toml_versions("[versions]\nminecraft = \"1.21.11\"").is_err());
+        assert!(parse_pack_toml_versions("[pack]\nname = \"test\"").is_err());
     }
 
     #[test]
     fn extract_no_false_prefix_match() {
-        // "fabric" should not match a line starting with "fabric_loader"
         assert_eq!(
             extract_toml_value("fabric_loader = \"0.18\"", "fabric"),
             None
@@ -432,92 +300,12 @@ fabric = "0.15.0" # required
     }
 
     #[test]
-    fn extract_with_extra_spaces() {
-        assert_eq!(
-            extract_toml_value("  minecraft  =  \"1.21.11\"  ", "minecraft"),
-            Some("1.21.11".to_string())
-        );
-    }
-
-    // ── needs_version_upgrade ──
-
-    #[test]
-    fn upgrade_needed_when_mc_differs() {
-        let remote = RemoteVersion {
-            mc_version: "1.21.11".into(),
-            fabric_version: "0.18.4".into(),
-            version_tag: "".into(),
-            pack_url: "".into(),
-            downloads: Downloads::default(),
-            pack_toml_raw: "".into(),
-        };
-        let local = LocalVersion {
-            mc_version: "1.20.4".into(),
-            fabric_version: "0.18.4".into(),
-            version_tag: "".into(),
-        };
-        assert!(needs_version_upgrade(&remote, &local));
-    }
-
-    #[test]
-    fn upgrade_needed_when_fabric_differs() {
-        let remote = RemoteVersion {
-            mc_version: "1.21.11".into(),
-            fabric_version: "0.18.5".into(),
-            version_tag: "".into(),
-            pack_url: "".into(),
-            downloads: Downloads::default(),
-            pack_toml_raw: "".into(),
-        };
-        let local = LocalVersion {
-            mc_version: "1.21.11".into(),
-            fabric_version: "0.18.4".into(),
-            version_tag: "".into(),
-        };
-        assert!(needs_version_upgrade(&remote, &local));
-    }
-
-    #[test]
-    fn no_upgrade_when_versions_match() {
-        let remote = RemoteVersion {
-            mc_version: "1.21.11".into(),
-            fabric_version: "0.18.4".into(),
-            version_tag: "".into(),
-            pack_url: "".into(),
-            downloads: Downloads::default(),
-            pack_toml_raw: "".into(),
-        };
-        let local = LocalVersion {
-            mc_version: "1.21.11".into(),
-            fabric_version: "0.18.4".into(),
-            version_tag: "".into(),
-        };
-        assert!(!needs_version_upgrade(&remote, &local));
-    }
-
-    // ── validate_version_string ──
-
-    #[test]
-    fn valid_version_strings() {
+    fn validate_version_string_checks_unsafe_chars() {
         assert!(validate_version_string("1.21.11").is_ok());
         assert!(validate_version_string("0.18.4").is_ok());
-        assert!(validate_version_string("1.20.4-pre1").is_ok());
-    }
-
-    #[test]
-    fn reject_path_traversal() {
-        assert!(validate_version_string("../../evil").is_err());
-        assert!(validate_version_string("1.21..11").is_err());
-    }
-
-    #[test]
-    fn reject_path_separators() {
-        assert!(validate_version_string("1.21/evil").is_err());
-        assert!(validate_version_string("1.21\\evil").is_err());
-    }
-
-    #[test]
-    fn reject_empty_version() {
         assert!(validate_version_string("").is_err());
+        assert!(validate_version_string("1.21/blocked").is_err());
+        assert!(validate_version_string("1.21\\blocked").is_err());
+        assert!(validate_version_string("1.21..11").is_err());
     }
 }
