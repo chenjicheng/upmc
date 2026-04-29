@@ -2,7 +2,7 @@
 // bootstrap.rs — 首次运行自举模块
 // ============================================================
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
@@ -24,8 +24,7 @@ pub fn needs_bootstrap(base_dir: &Path) -> bool {
 }
 
 pub fn is_bootstrapped(base_dir: &Path) -> bool {
-    base_dir.join(config::PCL2_EXE).exists()
-        && base_dir.join(config::LOCAL_VERSION_FILE).exists()
+    base_dir.join(config::PCL2_EXE).exists() && base_dir.join(config::LOCAL_VERSION_FILE).exists()
 }
 
 pub fn run_bootstrap(
@@ -41,8 +40,7 @@ pub fn run_bootstrap(
         "updater",
     ];
     for dir in &dirs {
-        fs::create_dir_all(base_dir.join(dir))
-            .with_context(|| format!("创建目录失败: {dir}"))?;
+        fs::create_dir_all(base_dir.join(dir)).with_context(|| format!("创建目录失败: {dir}"))?;
     }
 
     let pcl2_path = base_dir.join(config::PCL2_EXE);
@@ -70,16 +68,22 @@ pub fn run_bootstrap(
         )?;
 
         on_progress(Progress::new(39, "正在下载模组同步器..."));
-        download_file_verified(packwiz_url, &packwiz_jar, packwiz_sha256, on_progress, 39, 42)?;
+        download_file_verified(
+            packwiz_url,
+            &packwiz_jar,
+            packwiz_sha256,
+            on_progress,
+            39,
+            42,
+        )?;
     }
     on_progress(Progress::new(42, "模组同步器就绪"));
 
     let fabric_jar = base_dir.join(config::FABRIC_INSTALLER_JAR);
     if !fabric_jar.exists() {
-        let fabric_url = downloads
-            .fabric_installer_url
-            .as_deref()
-            .context("server.json 中未配置 Fabric 安装器下载地址 (downloads.fabric_installer_url)")?;
+        let fabric_url = downloads.fabric_installer_url.as_deref().context(
+            "server.json 中未配置 Fabric 安装器下载地址 (downloads.fabric_installer_url)",
+        )?;
         let fabric_sha256 = require_download_sha(
             downloads.fabric_installer_sha256.as_deref(),
             "fabric_installer_sha256",
@@ -93,8 +97,7 @@ pub fn run_bootstrap(
     let setup_ini = base_dir.join(config::PCL2_SETUP_INI_PATH);
     if !setup_ini.exists() {
         on_progress(Progress::new(47, "正在配置启动器..."));
-        fs::write(&setup_ini, config::PCL2_SETUP_INI)
-            .context("写入 Setup.ini 失败")?;
+        fs::write(&setup_ini, config::PCL2_SETUP_INI).context("写入 Setup.ini 失败")?;
     }
 
     let settings_marker = base_dir.join("updater/.settings_installed");
@@ -105,18 +108,23 @@ pub fn run_bootstrap(
 
             on_progress(Progress::new(48, "正在下载默认设置..."));
             let zip_path = base_dir.join("updater/settings-download.zip");
-            download_file_verified(settings_url, &zip_path, settings_sha256, on_progress, 48, 49)?;
+            download_file_verified(
+                settings_url,
+                &zip_path,
+                settings_sha256,
+                on_progress,
+                48,
+                49,
+            )?;
 
             on_progress(Progress::new(49, "正在应用默认设置..."));
             let mc_dir = base_dir.join(config::MINECRAFT_DIR);
             fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
-            extract_settings_zip(&zip_path, &mc_dir)
-                .context("解压设置包失败")?;
+            extract_settings_zip(&zip_path, &mc_dir).context("解压设置包失败")?;
 
             fs::remove_file(&zip_path).ok();
         }
-        fs::write(&settings_marker, "installed")
-            .context("写入设置安装标记失败")?;
+        fs::write(&settings_marker, "installed").context("写入设置安装标记失败")?;
     }
 
     on_progress(Progress::new(50, "首次安装完成"));
@@ -158,13 +166,31 @@ fn download_file_verified(
     progress_start: u32,
     progress_end: u32,
 ) -> Result<()> {
+    validate_download_url(url)?;
     validate_sha256_hex(expected_sha256)
         .with_context(|| format!("无效的 SHA256 配置: {}", dest.display()))?;
 
-    download_file(url, dest, on_progress, progress_start, progress_end)?;
-    verify_sha256(dest, expected_sha256)
-        .with_context(|| format!("文件 SHA256 校验失败: {}", dest.display()))?;
-    Ok(())
+    let url_owned = url.to_string();
+    let dest_owned = dest.to_path_buf();
+    let expected_sha256_owned = expected_sha256.to_string();
+
+    retry::with_retry(
+        config::RETRY_MAX_ATTEMPTS,
+        config::RETRY_BASE_DELAY_SECS,
+        &format!("下载并校验 {}", url),
+        || {
+            download_file_inner(
+                &url_owned,
+                &dest_owned,
+                on_progress,
+                progress_start,
+                progress_end,
+            )?;
+            verify_sha256(&dest_owned, &expected_sha256_owned)
+                .with_context(|| format!("文件 SHA256 校验失败: {}", dest_owned.display()))?;
+            Ok(())
+        },
+    )
 }
 
 fn download_file_inner(
@@ -188,8 +214,8 @@ fn download_file_inner(
     let total_size = response.body().content_length().unwrap_or(0);
 
     let mut reader = response.into_body().into_reader();
-    let mut file = fs::File::create(dest)
-        .with_context(|| format!("创建文件失败: {}", dest.display()))?;
+    let mut file =
+        fs::File::create(dest).with_context(|| format!("创建文件失败: {}", dest.display()))?;
 
     let mut buf = [0u8; 65536];
     let mut downloaded: u64 = 0;
@@ -204,8 +230,7 @@ fn download_file_inner(
 
         if total_size > 0 {
             let fraction = downloaded as f64 / total_size as f64;
-            let pct = progress_start
-                + (fraction * (progress_end - progress_start) as f64) as u32;
+            let pct = progress_start + (fraction * (progress_end - progress_start) as f64) as u32;
             let mb_done = downloaded as f64 / 1_048_576.0;
             let mb_total = total_size as f64 / 1_048_576.0;
             on_progress(Progress::new(
@@ -226,9 +251,9 @@ fn validate_download_url(url: &str) -> Result<()> {
     }
 
     let host = extract_url_host(url).context("无法解析下载 URL 主机名")?;
-    let allowed = config::TRUSTED_DOWNLOAD_HOST_SUFFIXES.iter().any(|suffix| {
-        host == *suffix || host.ends_with(&format!(".{suffix}"))
-    });
+    let allowed = config::TRUSTED_DOWNLOAD_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")));
 
     if !allowed {
         bail!("下载 URL 主机不在信任列表中: {host}");
@@ -238,9 +263,13 @@ fn validate_download_url(url: &str) -> Result<()> {
 
 fn extract_url_host(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://")?;
-    let host_port = rest.split(['/', '?', '#']).next()?;
-    let host = host_port.split(':').next()?.trim().to_ascii_lowercase();
-    if host.is_empty() {
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() || authority.contains('@') || authority.contains(['[', ']']) {
+        return None;
+    }
+
+    let host = authority.split(':').next()?.trim().to_ascii_lowercase();
+    if host.is_empty() || host.contains('@') {
         None
     } else {
         Some(host)
@@ -260,8 +289,8 @@ fn validate_downloaded_file(path: &Path) -> Result<()> {
         _ => return Ok(()),
     };
 
-    let mut f = fs::File::open(path)
-        .with_context(|| format!("打开下载文件失败: {}", path.display()))?;
+    let mut f =
+        fs::File::open(path).with_context(|| format!("打开下载文件失败: {}", path.display()))?;
     let mut magic = vec![0u8; expected_magic.len()];
     if f.read_exact(&mut magic).is_err() || magic != expected_magic {
         let _ = fs::remove_file(path);
@@ -276,7 +305,8 @@ fn validate_downloaded_file(path: &Path) -> Result<()> {
 }
 
 fn require_download_sha<'a>(value: Option<&'a str>, field_name: &str) -> Result<&'a str> {
-    let value = value.with_context(|| format!("server.json 中未配置下载校验值 downloads.{field_name}"))?;
+    let value =
+        value.with_context(|| format!("server.json 中未配置下载校验值 downloads.{field_name}"))?;
     validate_sha256_hex(value)
         .with_context(|| format!("server.json 中 downloads.{field_name} 不是有效 SHA256"))?;
     Ok(value)
@@ -291,8 +321,22 @@ fn validate_sha256_hex(value: &str) -> Result<()> {
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
-    let bytes = fs::read(path).with_context(|| format!("读取文件失败: {}", path.display()))?;
-    let actual = format!("{:x}", Sha256::digest(&bytes));
+    let mut file =
+        fs::File::open(path).with_context(|| format!("读取文件失败: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("读取文件失败: {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let actual = format!("{:x}", hasher.finalize());
     if actual != expected.to_ascii_lowercase() {
         let _ = fs::remove_file(path);
         bail!("期望 {expected}，实际 {actual}");
@@ -423,12 +467,18 @@ mod tests {
     #[test]
     fn validate_download_url_allows_trusted_suffix() {
         assert!(validate_download_url("https://github.com/a/b").is_ok());
+        assert!(validate_download_url("https://github.com:443/a/b").is_ok());
         assert!(validate_download_url("https://raw.githubusercontent.com/a/b").is_ok());
     }
 
     #[test]
     fn validate_download_url_rejects_untrusted_host() {
         assert!(validate_download_url("https://example.invalid/file.zip").is_err());
+    }
+
+    #[test]
+    fn validate_download_url_rejects_userinfo_host_bypass() {
+        assert!(validate_download_url("https://github.com:443@evil.com/file.zip").is_err());
     }
 
     #[test]

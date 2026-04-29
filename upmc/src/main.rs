@@ -35,7 +35,7 @@ fn main() {
         Ok(false) => {}
         Err(e) => {
             eprintln!("自更新 helper 执行失败: {e:#}");
-            return;
+            std::process::exit(1);
         }
     }
 
