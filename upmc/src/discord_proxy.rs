@@ -23,23 +23,24 @@ fn proxy_config(base_dir: &Path) -> discord_voice_proxy::ProxyConfig {
 const DWRITE_DLL: &[u8] = include_bytes!("../../target/release/dwrite.dll");
 const FORCE_PROXY_DLL: &[u8] = include_bytes!("../../target/release/force_proxy.dll");
 
-/// 检查是否已经配置过代理（xray config.json 存在）。
+/// 检查是否已经配置过代理（xray config.json 存在，且本机安装了 Discord）。
 pub fn is_configured(base_dir: &Path) -> bool {
-    base_dir
-        .join(config::XRAY_DIR)
-        .join("config.json")
-        .exists()
+    base_dir.join(config::XRAY_DIR).join("config.json").exists() && is_discord_installed()
+}
+
+/// 检查本机是否安装了 Discord。
+pub fn is_discord_installed() -> bool {
+    discord_voice_proxy::discord::is_installed()
 }
 
 /// 完整的首次配置/重新配置流程（用户点击按钮触发）。
 pub fn setup(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<()> {
+    ensure_discord_installed()?;
     xray::download_or_update(base_dir, on_progress)?;
 
     on_progress(Progress::new(38, "正在获取代理订阅..."));
     let configs = xray::fetch_subscription(config::SUBSCRIPTION_URL)?;
-    let vless = configs
-        .first()
-        .context("没有可用的 REALITY 代理配置")?;
+    let vless = configs.first().context("没有可用的 REALITY 代理配置")?;
     on_progress(Progress::new(42, format!("使用代理节点: {}", vless.name)));
 
     on_progress(Progress::new(44, "正在配置 Xray..."));
@@ -52,7 +53,14 @@ pub fn setup(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<()> {
 
     on_progress(Progress::new(60, "正在安装 Discord 代理..."));
     on_progress(Progress::new(80, "正在重启 Discord..."));
-    discord_voice_proxy::installer::install_and_run(DWRITE_DLL, FORCE_PROXY_DLL, &proxy_config(base_dir))?;
+    if let Err(e) = discord_voice_proxy::installer::install_and_run(
+        DWRITE_DLL,
+        FORCE_PROXY_DLL,
+        &proxy_config(base_dir),
+    ) {
+        xray::kill(base_dir);
+        return Err(e).context("安装 Discord 代理失败");
+    }
 
     on_progress(Progress::new(100, "Discord 代理已启用"));
     Ok(())
@@ -61,11 +69,15 @@ pub fn setup(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<()> {
 /// 已配置过时自动启动 Xray + 安装 DLL。
 /// 如果 Xray 启动失败，不安装 DLL（防止 Discord 卡死）。
 pub fn auto_start(base_dir: &Path) -> Result<()> {
+    ensure_discord_installed()?;
     let noop = |_: Progress| {};
     xray::download_or_update(base_dir, &noop)?;
     // Xray 必须成功启动，才安装 DLL
     xray::start(base_dir)?;
-    install_dlls(base_dir);
+    if let Err(e) = install_dlls(base_dir) {
+        xray::kill(base_dir);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -76,10 +88,19 @@ pub fn stop(base_dir: &Path) {
 }
 
 /// 安装/刷新 DLL 到 Discord（仅写入缺失的文件）。
-fn install_dlls(base_dir: &Path) {
-    if let Err(e) =
-        discord_voice_proxy::installer::ensure_installed(DWRITE_DLL, FORCE_PROXY_DLL, &proxy_config(base_dir))
-    {
-        eprintln!("安装 Discord 代理 DLL 失败: {e:#}");
+fn install_dlls(base_dir: &Path) -> Result<()> {
+    discord_voice_proxy::installer::ensure_installed(
+        DWRITE_DLL,
+        FORCE_PROXY_DLL,
+        &proxy_config(base_dir),
+    )
+    .context("安装 Discord 代理 DLL 失败")
+}
+
+fn ensure_discord_installed() -> Result<()> {
+    if is_discord_installed() {
+        Ok(())
+    } else {
+        anyhow::bail!("未检测到 Discord，请先安装 Discord 后再启用代理");
     }
 }
