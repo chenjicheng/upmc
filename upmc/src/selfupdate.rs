@@ -14,7 +14,7 @@
 //
 // 自替换策略（自拷贝 helper）：
 //   当前进程下载新 exe → .exe.new
-//   → 将当前 exe 复制为 upmc-update-helper.exe
+//   → 将当前 exe 复制为唯一命名的 upmc-update-helper-*.exe
 //   → helper 进程等待原 exe 解锁后覆盖 exe 并启动新版
 //   → 当前进程退出
 //
@@ -22,14 +22,15 @@
 // ExecutionPolicy Bypass，降低 Defender 启发式误报概率。
 // ============================================================
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{self, UpdateChannel};
 use crate::retry;
@@ -43,7 +44,8 @@ const SELF_UPDATE_HELPER_ARG: &str = "--apply-self-update";
 const SELF_UPDATE_SOURCE_ARG: &str = "--source";
 const SELF_UPDATE_TARGET_ARG: &str = "--target";
 const SELF_UPDATE_RESTART_ARG: &str = "--restart";
-const SELF_UPDATE_HELPER_NAME: &str = "upmc-update-helper.exe";
+const SELF_UPDATE_HELPER_PREFIX: &str = "upmc-update-helper-";
+const LEGACY_SELF_UPDATE_HELPER_NAME: &str = "upmc-update-helper.exe";
 
 /// 自更新检查结果
 pub enum SelfUpdateResult {
@@ -96,8 +98,87 @@ pub fn try_run_update_helper_from_args() -> Result<bool> {
     let target = target.context("自更新 helper 缺少 --target 参数")?;
     let restart = restart.unwrap_or_else(|| target.clone());
 
+    let helper_exe = current_exe_path()?;
+    let (source, target, restart) =
+        validate_update_helper_paths(&source, &target, &restart, &helper_exe)?;
+
     apply_downloaded_update(&source, &target, &restart)?;
     Ok(true)
+}
+
+fn validate_update_helper_paths(
+    source: &Path,
+    target: &Path,
+    restart: &Path,
+    helper_exe: &Path,
+) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    let helper_exe = canonicalize_absolute(helper_exe, "自更新 helper 路径")?;
+    let source = canonicalize_absolute(source, "自更新源文件")?;
+    let target = canonicalize_absolute(target, "自更新目标文件")?;
+    let restart = canonicalize_absolute(restart, "自更新重启目标")?;
+
+    let helper_name = helper_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("无法读取自更新 helper 文件名")?;
+    if !is_helper_file_name(helper_name) {
+        bail!("拒绝非自更新 helper 执行替换: {}", helper_exe.display());
+    }
+
+    if target != restart {
+        bail!(
+            "自更新 target/restart 不一致: {} != {}",
+            target.display(),
+            restart.display()
+        );
+    }
+
+    let helper_dir = helper_exe.parent().context("无法确定 helper 所在目录")?;
+    let target_dir = target.parent().context("无法确定自更新目标目录")?;
+    if helper_dir != target_dir {
+        bail!(
+            "自更新 helper 与目标不在同一目录: {} != {}",
+            helper_dir.display(),
+            target_dir.display()
+        );
+    }
+
+    let source_dir = source.parent().context("无法确定自更新源文件目录")?;
+    if source_dir != target_dir {
+        bail!(
+            "自更新源文件与目标不在同一目录: {} != {}",
+            source_dir.display(),
+            target_dir.display()
+        );
+    }
+
+    let expected_source =
+        canonicalize_absolute(&target.with_extension("exe.new"), "期望的自更新源文件")?;
+    if source != expected_source {
+        bail!(
+            "自更新源文件不匹配: {} != {}",
+            source.display(),
+            expected_source.display()
+        );
+    }
+
+    if helper_exe == target {
+        bail!("自更新 helper 不能覆盖自身: {}", helper_exe.display());
+    }
+
+    Ok((source, target, restart))
+}
+
+fn canonicalize_absolute(path: &Path, label: &str) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("{label} 必须是绝对路径: {}", path.display());
+    }
+    fs::canonicalize(path).with_context(|| format!("{label} 不存在或无法访问: {}", path.display()))
+}
+
+fn is_helper_file_name(name: &str) -> bool {
+    name == LEGACY_SELF_UPDATE_HELPER_NAME
+        || (name.starts_with(SELF_UPDATE_HELPER_PREFIX) && name.ends_with(".exe"))
 }
 
 /// 清理上次自更新残留的临时文件（.new / .old / helper）。
@@ -124,10 +205,17 @@ pub fn cleanup_old_exe() {
         // 清理上次复制出来的 helper。Windows 下 helper 运行时无法删除自身，
         // 因此通常会在新版启动时由主程序清理。
         if let Some(parent) = exe.parent() {
-            let helper = parent.join(SELF_UPDATE_HELPER_NAME);
-            if helper.exists() {
-                if let Err(e) = fs::remove_file(&helper) {
-                    eprintln!("清理残留 helper 失败: {e}");
+            if let Ok(entries) = fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
+                    if is_helper_file_name(name) {
+                        if let Err(e) = fs::remove_file(&path) {
+                            eprintln!("清理残留 helper 失败: {}: {e}", path.display());
+                        }
+                    }
                 }
             }
         }
@@ -290,17 +378,7 @@ pub fn check_and_update(
         // SHA256 校验
         match &expected_sha256 {
             Some(expected) => {
-                use sha2::{Digest, Sha256};
-                let file_bytes = fs::read(&temp_path).context("读取下载文件用于校验失败")?;
-                let actual = format!("{:x}", Sha256::digest(&file_bytes));
-                // 统一小写比较，兼容服务端返回大写哈希
-                if actual != expected.to_lowercase() {
-                    bail!(
-                        "SHA256 校验失败！文件可能被篡改。\n\
-                         期望: {expected}\n\
-                         实际: {actual}"
-                    );
-                }
+                verify_file_sha256(&temp_path, expected)?;
             }
             None => {
                 eprintln!("[安全警告] version.json 未提供 sha256 字段，跳过完整性校验");
@@ -326,29 +404,24 @@ pub fn check_and_update(
 
     spawn_update_helper(&exe_path, &temp_path).context("启动自更新 helper 失败")?;
 
-    on_progress(crate::update::Progress::new(11, "更新器已更新，正在重启..."));
+    on_progress(crate::update::Progress::new(
+        11,
+        "更新器已更新，正在重启...",
+    ));
 
     Ok(SelfUpdateResult::Restarting)
 }
 
 /// 复制当前 exe 为 helper，并由 helper 完成替换。
 fn spawn_update_helper(exe_path: &Path, temp_path: &Path) -> Result<()> {
+    let helper_name = unique_helper_file_name();
     let helper_path = exe_path
         .parent()
         .context("无法确定更新器所在目录")?
-        .join(SELF_UPDATE_HELPER_NAME);
+        .join(helper_name);
 
-    if helper_path.exists() {
-        fs::remove_file(&helper_path).ok();
-    }
-
-    fs::copy(exe_path, &helper_path).with_context(|| {
-        format!(
-            "创建自更新 helper 失败: {} → {}",
-            exe_path.display(),
-            helper_path.display()
-        )
-    })?;
+    copy_file_with_retry(exe_path, &helper_path, 10, Duration::from_millis(300))
+        .with_context(|| format!("创建自更新 helper 失败: {}", helper_path.display()))?;
 
     Command::new(&helper_path)
         .arg(SELF_UPDATE_HELPER_ARG)
@@ -362,6 +435,46 @@ fn spawn_update_helper(exe_path: &Path, temp_path: &Path) -> Result<()> {
         .with_context(|| format!("启动自更新 helper 失败: {}", helper_path.display()))?;
 
     Ok(())
+}
+
+fn unique_helper_file_name() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    format!(
+        "{}{}-{}.exe",
+        SELF_UPDATE_HELPER_PREFIX,
+        std::process::id(),
+        millis
+    )
+}
+
+fn copy_file_with_retry(
+    source: &Path,
+    dest: &Path,
+    attempts: usize,
+    delay: Duration,
+) -> Result<()> {
+    let mut last_error: Option<std::io::Error> = None;
+    for _ in 0..attempts.max(1) {
+        match fs::copy(source, dest) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_error = Some(e);
+                thread::sleep(delay);
+            }
+        }
+    }
+
+    let detail = last_error
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| "未知错误".to_string());
+    bail!(
+        "复制失败: {} → {}\n{detail}",
+        source.display(),
+        dest.display()
+    );
 }
 
 /// helper 进程执行的替换逻辑。
@@ -395,11 +508,19 @@ fn apply_downloaded_update(source: &Path, target: &Path, restart: &Path) -> Resu
         let detail = last_error
             .map(|e| e.to_string())
             .unwrap_or_else(|| "未知错误".to_string());
-        bail!(
+        let message = format!(
             "自更新替换失败: {} → {}\n{detail}",
             source.display(),
             target.display()
         );
+        eprintln!("{message}");
+        match Command::new(restart).spawn() {
+            Ok(_) => bail!("{message}\n已尝试重新启动旧版更新器: {}", restart.display()),
+            Err(restart_error) => bail!(
+                "{message}\n尝试重新启动旧版更新器也失败: {}: {restart_error}",
+                restart.display()
+            ),
+        }
     }
 
     // 替换成功后清理 .new。helper 自身通常会在下一次主程序启动时清理。
@@ -410,4 +531,99 @@ fn apply_downloaded_update(source: &Path, target: &Path, restart: &Path) -> Resu
         .with_context(|| format!("启动新版更新器失败: {}", restart.display()))?;
 
     Ok(())
+}
+
+fn verify_file_sha256(path: &Path, expected: &str) -> Result<()> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("读取下载文件用于校验失败: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("读取下载文件用于校验失败: {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected.to_ascii_lowercase() {
+        bail!(
+            "SHA256 校验失败！文件可能被篡改。\n\
+             期望: {expected}\n\
+             实际: {actual}"
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "upmc_selfupdate_{name}_{}_{}",
+            std::process::id(),
+            millis
+        ))
+    }
+
+    #[test]
+    fn validate_helper_paths_accepts_expected_layout() {
+        let dir = unique_test_dir("valid");
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("upmc.exe");
+        let source = dir.join("upmc.exe.new");
+        let helper = dir.join("upmc-update-helper-1-2.exe");
+        fs::write(&target, b"old").unwrap();
+        fs::write(&source, b"new").unwrap();
+        fs::write(&helper, b"helper").unwrap();
+
+        let result = validate_update_helper_paths(&source, &target, &target, &helper);
+        assert!(result.is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_helper_paths_rejects_unexpected_source() {
+        let dir = unique_test_dir("bad_source");
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("upmc.exe");
+        let source = dir.join("other.exe.new");
+        let helper = dir.join("upmc-update-helper-1-2.exe");
+        fs::write(&target, b"old").unwrap();
+        fs::write(&source, b"new").unwrap();
+        fs::write(&helper, b"helper").unwrap();
+
+        let result = validate_update_helper_paths(&source, &target, &target, &helper);
+        assert!(result.is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_helper_paths_rejects_different_restart() {
+        let dir = unique_test_dir("bad_restart");
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("upmc.exe");
+        let restart = dir.join("other.exe");
+        let source = dir.join("upmc.exe.new");
+        let helper = dir.join("upmc-update-helper-1-2.exe");
+        fs::write(&target, b"old").unwrap();
+        fs::write(&restart, b"other").unwrap();
+        fs::write(&source, b"new").unwrap();
+        fs::write(&helper, b"helper").unwrap();
+
+        let result = validate_update_helper_paths(&source, &target, &restart, &helper);
+        assert!(result.is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
 }
