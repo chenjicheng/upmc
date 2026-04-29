@@ -90,7 +90,7 @@ pub struct UpdaterApp {
     // ── 窗口 ──
     #[nwg_control(
         title: "",
-        size: (420, 195),
+        size: (420, 235),
         position: (300, 300),
         flags: "WINDOW|VISIBLE",
         center: true,
@@ -129,7 +129,7 @@ pub struct UpdaterApp {
     // ── 启动 PCL 按钮（初始隐藏） ──
     #[nwg_control(
         text: "启动 PCL",
-        size: (175, 35),
+        size: (380, 35),
         position: (20, 120)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_launch_pcl])]
@@ -138,8 +138,8 @@ pub struct UpdaterApp {
     // ── 启用 Discord 代理按钮（初始隐藏） ──
     #[nwg_control(
         text: "启用代理",
-        size: (105, 35),
-        position: (200, 120)
+        size: (260, 35),
+        position: (20, 160)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_enable_discord_proxy])]
     btn_discord_proxy: nwg::Button,
@@ -147,8 +147,8 @@ pub struct UpdaterApp {
     // ── 设置按钮（初始隐藏） ──
     #[nwg_control(
         text: "设置",
-        size: (55, 35),
-        position: (320, 120)
+        size: (110, 35),
+        position: (290, 160)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_settings])]
     btn_settings: nwg::Button,
