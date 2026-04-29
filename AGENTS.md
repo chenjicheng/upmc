@@ -32,4 +32,4 @@ Use short imperative commit titles matching the existing history, for example `B
 
 ## Security & Configuration Tips
 
-Keep download URLs HTTPS-only and preserve SHA256 validation for bootstrap downloads. Do not weaken trusted host or suffix checks. Be careful with zip extraction, filesystem paths, and process execution. Avoid reintroducing PowerShell-based self-update chains unless the security model is documented and reviewed.
+Keep download URLs HTTPS-only and preserve SHA256 validation for bootstrap downloads. Do not weaken trusted host or suffix checks. Self-update helpers use unique `upmc-update-helper-*.exe` names, with `upmc-update-helper.exe` retained only for legacy compatibility. Be careful with zip extraction, filesystem paths, and process execution. Avoid reintroducing PowerShell-based self-update chains unless the security model is documented and reviewed.
