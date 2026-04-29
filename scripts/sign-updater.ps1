@@ -35,8 +35,6 @@ $pfxPath = Join-Path $tempDir "codesign.pfx"
 try {
     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($certBase64))
 
-    $securePassword = ConvertTo-SecureString $certPassword -AsPlainText -Force
-
     $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
         Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
         Sort-Object FullName -Descending |
@@ -50,7 +48,7 @@ try {
         /f $pfxPath `
         /p $certPassword `
         /fd SHA256 `
-        /tr http://timestamp.digicert.com `
+        /tr https://timestamp.digicert.com `
         /td SHA256 `
         $FilePath
 
