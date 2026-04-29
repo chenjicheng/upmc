@@ -129,7 +129,7 @@ pub struct UpdaterApp {
     // ── 启动 PCL 按钮（初始隐藏） ──
     #[nwg_control(
         text: "启动 PCL",
-        size: (140, 35),
+        size: (175, 35),
         position: (20, 120)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_launch_pcl])]
@@ -137,9 +137,9 @@ pub struct UpdaterApp {
 
     // ── 启用 Discord 代理按钮（初始隐藏） ──
     #[nwg_control(
-        text: "启用 Discord 代理",
-        size: (175, 35),
-        position: (165, 120)
+        text: "启用代理",
+        size: (105, 35),
+        position: (200, 120)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_enable_discord_proxy])]
     btn_discord_proxy: nwg::Button,
@@ -148,7 +148,7 @@ pub struct UpdaterApp {
     #[nwg_control(
         text: "设置",
         size: (55, 35),
-        position: (345, 120)
+        position: (320, 120)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_settings])]
     btn_settings: nwg::Button,
@@ -287,7 +287,7 @@ impl UpdaterApp {
                     self.btn_discord_proxy.set_text("停止代理");
                 } else {
                     self.show_action_buttons("更新完成", None);
-                    self.btn_discord_proxy.set_text("启用 Discord 代理");
+                    self.btn_discord_proxy.set_text("启用代理");
                 }
             }
             FinishState::SelfUpdateRestarting => {
@@ -328,7 +328,7 @@ impl UpdaterApp {
             FinishState::ProxyStopped => {
                 self.proxy_running.set(false);
                 self.show_action_buttons("代理已停止", None);
-                self.btn_discord_proxy.set_text("启用 Discord 代理");
+                self.btn_discord_proxy.set_text("启用代理");
             }
             FinishState::ProxyError(ref error_text) => {
                 self.proxy_running.set(false);
