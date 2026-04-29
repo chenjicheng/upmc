@@ -138,7 +138,7 @@ pub struct UpdaterApp {
     // ── 启用 Discord 代理按钮（初始隐藏） ──
     #[nwg_control(
         text: "启用代理",
-        size: (260, 35),
+        size: (185, 35),
         position: (20, 160)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_enable_discord_proxy])]
@@ -147,8 +147,8 @@ pub struct UpdaterApp {
     // ── 设置按钮（初始隐藏） ──
     #[nwg_control(
         text: "设置",
-        size: (110, 35),
-        position: (290, 160)
+        size: (185, 35),
+        position: (215, 160)
     )]
     #[nwg_events(OnButtonClick: [UpdaterApp::on_settings])]
     btn_settings: nwg::Button,
