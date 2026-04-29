@@ -4,7 +4,7 @@
 
 ## 自更新
 
-自更新不再调用 PowerShell、cmd 或脚本解释器，也不再使用 `ExecutionPolicy Bypass`。主程序下载新版 `updater.exe` 到 `.exe.new` 后，会复制当前 exe 为 `upmc-update-helper.exe`。helper 进程等待主程序退出后覆盖原 exe 并启动新版。
+自更新不再调用 PowerShell、cmd 或脚本解释器，也不再使用 `ExecutionPolicy Bypass`。主程序下载新版 `updater.exe` 到 `.exe.new` 后，会复制当前 exe 为唯一命名的 `upmc-update-helper-*.exe`（旧版兼容名为 `upmc-update-helper.exe`）。helper 进程等待主程序退出后覆盖原 exe 并启动新版。
 
 这比隐藏 PowerShell 内联命令更不容易触发 Defender 的下载器/dropper 启发式规则。
 
