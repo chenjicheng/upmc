@@ -43,6 +43,8 @@ enum FinishState {
     ProxyError(String),
     /// Discord 代理已停止
     ProxyStopped,
+    /// Discord 代理已停止，但状态保存或 DLL 清理失败
+    ProxyStopError(String),
 }
 
 /// 共享的进度状态，后台线程写入，GUI 线程读取。
@@ -262,7 +264,11 @@ impl UpdaterApp {
             let finish = state.finish.take();
             let log_text = if matches!(
                 finish,
-                Some(FinishState::Error(_) | FinishState::ProxyError(_))
+                Some(
+                    FinishState::Error(_)
+                        | FinishState::ProxyError(_)
+                        | FinishState::ProxyStopError(_)
+                )
             ) {
                 Some(state.log.join("\r\n"))
             } else {
@@ -329,6 +335,14 @@ impl UpdaterApp {
                 self.proxy_running.set(false);
                 self.show_action_buttons("代理已停止", None);
                 self.btn_discord_proxy.set_text("启用代理");
+            }
+            FinishState::ProxyStopError(ref error_text) => {
+                self.proxy_running.set(false);
+                self.show_action_buttons("代理停止不完整", Some(error_text));
+                self.btn_discord_proxy.set_text("启用代理");
+                if let Some(log) = log_text.as_deref() {
+                    show_error_log_dialog(&self.window, log);
+                }
             }
             FinishState::ProxyError(ref error_text) => {
                 self.proxy_running.set(false);
@@ -412,10 +426,16 @@ impl UpdaterApp {
                     completed: false,
                 };
 
-                discord_proxy::stop(&base_dir);
-
+                let result = discord_proxy::stop(&base_dir);
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.finish = Some(FinishState::ProxyStopped);
+                s.finish = Some(match result {
+                    Ok(()) => FinishState::ProxyStopped,
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        s.log.push(format!("[代理][停止错误] {msg}"));
+                        FinishState::ProxyStopError(msg)
+                    }
+                });
                 drop(s);
                 notice_sender.notice();
                 guard.completed = true;
@@ -680,7 +700,13 @@ fn show_settings_dialog(parent: &nwg::Window, base_dir: &std::path::Path) {
                 let udp = channel_combo.borrow(); // just to keep the borrow checker happy
                 drop(udp);
                 let udp = udp_check.borrow().check_state() == nwg::CheckBoxState::Checked;
-                let _ = save_user_settings(&base_dir, &UserSettings { proxy_udp: udp });
+                let _ = save_user_settings(
+                    &base_dir,
+                    &UserSettings {
+                        proxy_udp: udp,
+                        proxy_enabled: current_settings.proxy_enabled,
+                    },
+                );
 
                 nwg::modal_info_message(win_handle, "提示", "设置已保存，下次启动时生效");
                 nwg::stop_thread_dispatch();

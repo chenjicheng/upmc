@@ -28,6 +28,14 @@ pub fn is_configured(base_dir: &Path) -> bool {
     base_dir.join(config::XRAY_DIR).join("config.json").exists() && is_discord_installed()
 }
 
+/// 检查是否应在软件启动时恢复代理。
+///
+/// 配置文件存在只代表代理曾经配置过；用户手动停止后，
+/// `proxy_enabled` 会阻止下次启动自动恢复。
+pub fn should_auto_start(base_dir: &Path) -> bool {
+    is_configured(base_dir) && config::load_user_settings(base_dir).proxy_enabled
+}
+
 /// 检查本机是否安装了 Discord。
 pub fn is_discord_installed() -> bool {
     discord_voice_proxy::discord::is_installed()
@@ -62,6 +70,12 @@ pub fn setup(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<()> {
         return Err(e).context("安装 Discord 代理失败");
     }
 
+    if let Err(e) = set_proxy_enabled(base_dir, true) {
+        xray::kill(base_dir);
+        let _ = discord_voice_proxy::installer::uninstall();
+        return Err(e);
+    }
+
     on_progress(Progress::new(100, "Discord 代理已启用"));
     Ok(())
 }
@@ -81,10 +95,17 @@ pub fn auto_start(base_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 停止代理：杀 Xray + 卸载 Discord DLL。
-pub fn stop(base_dir: &Path) {
+/// 停止代理：记住用户选择 + 杀 Xray + 卸载 Discord DLL。
+pub fn stop(base_dir: &Path) -> Result<()> {
+    // 先持久化用户意图，即使后续清理失败，下次启动也不会重新安装代理。
+    let persist_result = set_proxy_enabled(base_dir, false);
     xray::kill(base_dir);
-    let _ = discord_voice_proxy::installer::uninstall();
+    let uninstall_result =
+        discord_voice_proxy::installer::uninstall().context("卸载 Discord 代理 DLL 失败");
+
+    persist_result?;
+    uninstall_result?;
+    Ok(())
 }
 
 /// 安装/刷新 DLL 到 Discord（仅写入缺失的文件）。
@@ -103,4 +124,16 @@ fn ensure_discord_installed() -> Result<()> {
     } else {
         anyhow::bail!("未检测到 Discord，请先安装 Discord 后再启用代理");
     }
+}
+
+fn set_proxy_enabled(base_dir: &Path, enabled: bool) -> Result<()> {
+    let mut settings = config::load_user_settings(base_dir);
+    settings.proxy_enabled = enabled;
+    config::save_user_settings(base_dir, &settings).with_context(|| {
+        if enabled {
+            "保存代理启用状态失败"
+        } else {
+            "保存代理停止状态失败，重新打开软件时可能再次启动代理"
+        }
+    })
 }

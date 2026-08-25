@@ -291,17 +291,30 @@ pub const XRAY_DIR: &str = "updater/xray";
 /// 用户设置文件（相对于 base_dir）
 pub const USER_SETTINGS_FILE: &str = "updater/settings.json";
 
+fn proxy_enabled_by_default() -> bool {
+    true
+}
+
 /// 用户可修改的设置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSettings {
     /// 是否劫持 UDP 流量（Discord 语音走代理）。默认 false。
     #[serde(default)]
     pub proxy_udp: bool,
+
+    /// 用户是否希望代理保持启用。
+    ///
+    /// 旧版设置文件没有这个字段，此时保持原有的自动启动行为。
+    #[serde(default = "proxy_enabled_by_default")]
+    pub proxy_enabled: bool,
 }
 
 impl Default for UserSettings {
     fn default() -> Self {
-        Self { proxy_udp: false }
+        Self {
+            proxy_udp: false,
+            proxy_enabled: true,
+        }
     }
 }
 
@@ -363,4 +376,39 @@ pub fn find_java() -> Result<PathBuf> {
         .spawn();
 
     Err(anyhow::Error::new(JavaNotFound))
+}
+
+#[cfg(test)]
+mod user_settings_tests {
+    use super::{UserSettings, load_user_settings, save_user_settings};
+
+    #[test]
+    fn legacy_settings_keep_proxy_enabled() {
+        let settings: UserSettings = serde_json::from_str(r#"{"proxy_udp":true}"#).unwrap();
+
+        assert!(settings.proxy_udp);
+        assert!(settings.proxy_enabled);
+    }
+
+    #[test]
+    fn disabled_proxy_setting_persists_across_loads() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!(
+            "upmc-user-settings-test-{}-{unique}",
+            std::process::id()
+        ));
+        let settings = UserSettings {
+            proxy_udp: false,
+            proxy_enabled: false,
+        };
+
+        save_user_settings(&base_dir, &settings).unwrap();
+        let decoded = load_user_settings(&base_dir);
+        std::fs::remove_dir_all(&base_dir).unwrap();
+
+        assert!(!decoded.proxy_enabled);
+    }
 }
