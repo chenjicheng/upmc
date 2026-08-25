@@ -31,6 +31,8 @@ struct GithubRelease {
 struct GithubAsset {
     name: String,
     browser_download_url: String,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 // ── VLESS 配置 ─────────────────────────────────────────────
@@ -84,10 +86,18 @@ pub fn download_or_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Re
 
     // 通过 GitHub 镜像下载
     let download_url = format!("{}{}", config::GITHUB_PROXY, asset.browser_download_url);
+    let expected_sha256 = github_asset_sha256(asset.digest.as_deref())?;
     on_progress(Progress::new(10, format!("正在下载 Xray {}...", release.tag_name)));
 
     let zip_path = xray_dir.join("xray-download.zip");
-    bootstrap::download_file(&download_url, &zip_path, on_progress, 10, 28)?;
+    bootstrap::download_file_verified(
+        &download_url,
+        &zip_path,
+        expected_sha256,
+        on_progress,
+        10,
+        28,
+    )?;
 
     // 解压
     on_progress(Progress::new(30, "正在解压 Xray..."));
@@ -445,6 +455,13 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+fn github_asset_sha256(digest: Option<&str>) -> Result<&str> {
+    let digest = digest.context("GitHub API 未提供 Xray 资产摘要")?;
+    digest
+        .strip_prefix("sha256:")
+        .context("GitHub API 返回了不支持的 Xray 资产摘要格式")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +494,14 @@ mod tests {
         let encoded2 = "SGVsbG8gV29ybGQ=";
         let decoded2 = base64_decode(encoded2).unwrap();
         assert_eq!(decoded2, b"Hello World");
+    }
+
+    #[test]
+    fn parses_github_asset_sha256() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(github_asset_sha256(Some(&digest)).unwrap(), "a".repeat(64));
+        assert!(github_asset_sha256(None).is_err());
+        assert!(github_asset_sha256(Some("sha512:abc")).is_err());
     }
 
     #[test]

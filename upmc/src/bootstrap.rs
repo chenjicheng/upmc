@@ -131,34 +131,7 @@ pub fn run_bootstrap(
     Ok(())
 }
 
-pub(crate) fn download_file(
-    url: &str,
-    dest: &Path,
-    on_progress: &dyn Fn(Progress),
-    progress_start: u32,
-    progress_end: u32,
-) -> Result<()> {
-    validate_download_url(url)?;
-    let url_owned = url.to_string();
-    let dest_owned = dest.to_path_buf();
-
-    retry::with_retry(
-        config::RETRY_MAX_ATTEMPTS,
-        config::RETRY_BASE_DELAY_SECS,
-        &format!("下载 {}", url),
-        || {
-            download_file_inner(
-                &url_owned,
-                &dest_owned,
-                on_progress,
-                progress_start,
-                progress_end,
-            )
-        },
-    )
-}
-
-fn download_file_verified(
+pub(crate) fn download_file_verified(
     url: &str,
     dest: &Path,
     expected_sha256: &str,
@@ -469,6 +442,7 @@ mod tests {
         assert!(validate_download_url("https://github.com/a/b").is_ok());
         assert!(validate_download_url("https://github.com:443/a/b").is_ok());
         assert!(validate_download_url("https://raw.githubusercontent.com/a/b").is_ok());
+        assert!(validate_download_url("https://gh-proxy.com/https://github.com/a/b").is_ok());
     }
 
     #[test]

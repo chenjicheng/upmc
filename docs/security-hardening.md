@@ -41,6 +41,9 @@
 
 `settings_url` 可省略；如果配置了 `settings_url`，则必须同时配置 `settings_sha256`。
 
+Xray 也会通过 GitHub 下载代理获取。更新器使用 GitHub Release API
+返回的资产 `digest` 校验 ZIP，代理返回的内容与 GitHub 摘要不一致时会拒绝解压。
+
 ## ZIP 解压
 
 ZIP 条目会被检查并拒绝以下路径：

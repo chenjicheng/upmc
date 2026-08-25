@@ -225,7 +225,7 @@ pub fn cleanup_old_exe() {
 /// 更新器远程版本信息（从版本信息 URL 获取）
 #[derive(Debug, Deserialize)]
 pub struct UpdaterVersionInfo {
-    /// exe 下载地址（经 gh.cjcx.org 代理）
+    /// exe 下载地址（经 GitHub 下载代理）
     pub download_url: String,
     /// 构建 ID（commit SHA），所有通道统一使用
     #[serde(default)]
