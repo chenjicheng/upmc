@@ -194,7 +194,7 @@ pub fn run_update(
 
     // 如果之前已配置过代理，自动启动 Xray + 安装 DLL
     // 如果 Xray 启动失败，不安装 DLL（避免 Discord 连不上网）
-    let proxy_running = if discord_proxy::is_configured(base_dir) {
+    let proxy_running = if discord_proxy::should_auto_start(base_dir) {
         on_progress(Progress::new(97, "正在启动代理..."));
         match discord_proxy::auto_start(base_dir) {
             Ok(()) => true,
