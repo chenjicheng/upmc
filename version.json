@@ -1,6 +1,6 @@
 {
-  "version": "0.4.6",
-  "download_url": "https://gh-proxy.com/https://github.com/chenjicheng/upmc/releases/download/v0.4.6/updater.exe",
-  "build_id": "e1065713155c44820b57cc7a04fcbbfefac1d69c",
-  "sha256": "4a26b029acf383f5af7049182ba39aa9a5452281c237154b737fc087511a9612"
+  "version": "0.4.7",
+  "download_url": "https://gh.chenjicheng.cn/https://github.com/chenjicheng/upmc/releases/download/v0.4.7/updater.exe",
+  "build_id": "d0e2f59f9c8eb614560e1c4fdfc2234c4a9837d7",
+  "sha256": "715b23cccea42f8a5f44c06f6b31ae805a3dd0cc524237c04f9197b68c1fb0d1"
 }
