@@ -442,7 +442,7 @@ mod tests {
         assert!(validate_download_url("https://github.com/a/b").is_ok());
         assert!(validate_download_url("https://github.com:443/a/b").is_ok());
         assert!(validate_download_url("https://raw.githubusercontent.com/a/b").is_ok());
-        assert!(validate_download_url("https://gh-proxy.com/https://github.com/a/b").is_ok());
+        assert!(validate_download_url("https://gh.chenjicheng.cn/https://github.com/a/b").is_ok());
     }
 
     #[test]
