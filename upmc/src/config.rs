@@ -27,7 +27,7 @@ pub const TRUSTED_DOWNLOAD_HOST_SUFFIXES: &[&str] = &[
     "github.com",
     "githubusercontent.com",
     "objects.githubusercontent.com",
-    "gh-proxy.com",
+    "gh.chenjicheng.cn",
     "bmclapi2.bangbang93.com",
     "maven.fabricmc.net",
 ];
@@ -268,7 +268,7 @@ LaunchArgumentWindowHeight=720\r\n\
 // ── Discord 代理 / Xray ──
 
 /// GitHub 下载代理前缀（与自更新模块使用同一镜像）
-pub const GITHUB_PROXY: &str = "https://gh-proxy.com/";
+pub const GITHUB_PROXY: &str = "https://gh.chenjicheng.cn/";
 
 /// Xray GitHub 仓库
 pub const XRAY_GITHUB_REPO: &str = "XTLS/Xray-core";
