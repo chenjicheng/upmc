@@ -224,15 +224,82 @@ pub fn cleanup_old_exe() {
 
 /// 更新器远程版本信息（从版本信息 URL 获取）
 #[derive(Debug, Deserialize)]
+#[serde(try_from = "RawUpdaterVersionInfo")]
 pub struct UpdaterVersionInfo {
+    pub version: semver::Version,
     /// exe 下载地址（经 GitHub 下载代理）
     pub download_url: String,
     /// 构建 ID（commit SHA），所有通道统一使用
-    #[serde(default)]
-    pub build_id: Option<String>,
+    pub build_id: String,
     /// exe 文件的 SHA256 哈希（小写十六进制），用于下载后完整性校验
-    #[serde(default)]
-    pub sha256: Option<String>,
+    pub sha256: String,
+    pub size: u64,
+}
+
+#[derive(Deserialize)]
+struct RawUpdaterVersionInfo {
+    version: String,
+    build_id: String,
+    download_url: String,
+    sha256: String,
+    size: u64,
+}
+
+impl TryFrom<RawUpdaterVersionInfo> for UpdaterVersionInfo {
+    type Error = anyhow::Error;
+    fn try_from(raw: RawUpdaterVersionInfo) -> Result<Self> {
+        anyhow::ensure!(
+            raw.build_id.len() == 40 && raw.build_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "build_id must be a full commit SHA"
+        );
+        anyhow::ensure!(
+            raw.sha256.len() == 64 && raw.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+            "sha256 must contain 64 hexadecimal digits"
+        );
+        anyhow::ensure!(raw.size > 0, "updater size must be positive");
+        validate_release_url(&raw.download_url)?;
+        Ok(Self {
+            version: semver::Version::parse(&raw.version)
+                .context("updater version must be SemVer")?,
+            build_id: raw.build_id.to_ascii_lowercase(),
+            sha256: raw.sha256.to_ascii_lowercase(),
+            download_url: raw.download_url,
+            size: raw.size,
+        })
+    }
+}
+
+fn validate_release_url(value: &str) -> Result<()> {
+    let official = value
+        .strip_prefix("https://gh.chenjicheng.cn/")
+        .unwrap_or(value);
+    let url = url::Url::parse(official).context("invalid updater Release URL")?;
+    anyhow::ensure!(
+        url.scheme() == "https"
+            && url.host_str() == Some("github.com")
+            && url.port().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "updater must use an official HTTPS Release URL"
+    );
+    let parts: Vec<_> = url
+        .path_segments()
+        .context("invalid updater Release path")?
+        .collect();
+    anyhow::ensure!(
+        parts.len() == 6
+            && parts[..4] == ["chenjicheng", "upmc", "releases", "download"]
+            && !parts[4].is_empty()
+            && parts[4]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b))
+            && parts[5] == "updater.exe",
+        "updater must be the official updater.exe Release artifact"
+    );
+    anyhow::ensure!(official == url.as_str(), "noncanonical updater Release URL");
+    Ok(())
 }
 
 /// 从版本信息 URL 获取更新器版本信息（带重试）。
@@ -283,18 +350,15 @@ pub fn check_and_update(
     let info = fetch_updater_info(channel)?;
 
     // 统一用 build_id 判断是否需要更新
-    let needs_update = match (&info.build_id, CURRENT_BUILD_ID) {
-        (Some(remote_id), Some(local_id)) => remote_id != local_id,
-        (Some(_), None) => true, // 本地无 build_id（非 CI 构建），需要更新
-        _ => false,              // 远程无 build_id，跳过
-    };
+    let needs_update =
+        bridge_update_required(&info, env!("CARGO_PKG_VERSION"), CURRENT_BUILD_ID, channel)?;
 
     if !needs_update {
         return Ok(SelfUpdateResult::UpToDate);
     }
 
     let local_id = CURRENT_BUILD_ID.unwrap_or("local");
-    let remote_id = info.build_id.as_deref().unwrap_or("unknown");
+    let remote_id = &info.build_id;
     on_progress(crate::update::Progress::new(
         2,
         format!("发现新版本 {local_id} → {remote_id}，正在下载..."),
@@ -376,14 +440,12 @@ pub fn check_and_update(
         }
 
         // SHA256 校验
-        match &expected_sha256 {
-            Some(expected) => {
-                verify_file_sha256(&temp_path, expected)?;
-            }
-            None => {
-                eprintln!("[安全警告] version.json 未提供 sha256 字段，跳过完整性校验");
-            }
-        }
+        anyhow::ensure!(
+            file_size == info.size,
+            "updater size mismatch: expected {}, received {file_size}",
+            info.size
+        );
+        verify_file_sha256(&temp_path, &expected_sha256)?;
 
         Ok(())
     };
@@ -411,6 +473,25 @@ pub fn check_and_update(
 
     Ok(SelfUpdateResult::Restarting)
 }
+
+fn bridge_update_required(
+    info: &UpdaterVersionInfo,
+    current: &str,
+    local: Option<&str>,
+    channel: UpdateChannel,
+) -> Result<bool> {
+    let current =
+        semver::Version::parse(current).context("current updater version must be SemVer")?;
+    let ordering = info.version.cmp_precedence(&current);
+    Ok(ordering.is_gt()
+        || (ordering.is_eq()
+            && channel == UpdateChannel::Dev
+            && local.is_some_and(|local| !info.build_id.eq_ignore_ascii_case(local))))
+}
+
+#[cfg(test)]
+#[path = "selfupdate_bridge_tests.rs"]
+mod bridge_tests;
 
 /// 复制当前 exe 为 helper，并由 helper 完成替换。
 fn spawn_update_helper(exe_path: &Path, temp_path: &Path) -> Result<()> {
