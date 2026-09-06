@@ -29,7 +29,6 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{self, UpdateChannel};
-use crate::retry;
 const CURRENT_BUILD_ID: Option<&str> = option_env!("UPMC_BUILD_ID");
 
 /// helper 模式参数。主程序启动时如果检测到该参数，则只执行自更新替换逻辑。
@@ -1644,11 +1643,12 @@ fn validate_release_url(value: &str) -> Result<()> {
 
 /// 从版本信息 URL 获取更新器版本信息（带重试）。
 fn fetch_updater_info(channel: UpdateChannel) -> Result<UpdaterVersionInfo> {
-    retry::with_retry(
+    bridge_retry_with(
         config::RETRY_MAX_ATTEMPTS,
-        config::RETRY_BASE_DELAY_SECS,
+        Duration::from_secs(config::RETRY_BASE_DELAY_SECS),
         "获取更新器版本信息",
         || fetch_updater_info_inner(channel),
+        thread::sleep,
     )
 }
 
@@ -1656,8 +1656,19 @@ fn fetch_updater_info(channel: UpdateChannel) -> Result<UpdaterVersionInfo> {
 fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo> {
     let url = config::updater_version_url(channel);
 
-    let agent = config::http_agent();
+    let agent = bridge_http_agent(Duration::from_secs(config::HTTP_TIMEOUT_SECS));
+    fetch_updater_info_from(&agent, url)
+}
 
+fn bridge_http_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .https_only(true)
+        .timeout_global(Some(timeout))
+        .build()
+        .into()
+}
+
+fn fetch_updater_info_from(agent: &ureq::Agent, url: &str) -> Result<UpdaterVersionInfo> {
     let body = agent
         .get(url)
         .call()
@@ -1665,6 +1676,8 @@ fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo
 
     let text = body
         .into_body()
+        .with_config()
+        .limit(16 * 1024)
         .read_to_string()
         .context("读取版本信息失败")?;
 
@@ -1673,8 +1686,8 @@ fn fetch_updater_info_inner(channel: UpdateChannel) -> Result<UpdaterVersionInfo
 
 /// 检查并执行自更新。
 ///
-/// 所有通道统一使用 build_id（commit SHA）判断是否需要更新：
-///   本地 build_id != 远程 build_id → 需要更新
+/// Stable requires greater SemVer precedence; dev additionally permits an
+/// explicit different build at equal precedence. Every channel rejects downgrades.
 ///
 /// 返回 `SelfUpdateResult::Restarting` 时，调用方应立即退出进程。
 pub fn check_and_update(
@@ -1689,7 +1702,7 @@ pub fn check_and_update(
     // 从对应通道的 version.json 获取版本信息
     let info = fetch_updater_info(channel)?;
 
-    // 统一用 build_id 判断是否需要更新
+    // Validate metadata before selecting a forward-only update.
     let needs_update =
         bridge_update_required(&info, env!("CARGO_PKG_VERSION"), CURRENT_BUILD_ID, channel)?;
 
@@ -1711,108 +1724,41 @@ pub fn check_and_update(
     let temp_path = exe_path.with_extension("exe.new");
     let download_url = &info.download_url;
 
-    // 校验下载 URL 必须使用 HTTPS
-    if !download_url.starts_with("https://") {
-        bail!("更新器下载 URL 必须使用 HTTPS 协议: {download_url}");
-    }
-
-    // 清理上次可能残留的临时文件
-    if temp_path.exists() {
-        fs::remove_file(&temp_path).ok();
-    }
-
-    // 保存 sha256 供校验使用
-    let expected_sha256 = info.sha256.clone();
+    remove_stale_file(&temp_path).context("清理旧的更新器临时文件失败")?;
 
     // 下载 + 校验：用闭包包裹，出错时统一清理临时文件
     let download_and_verify = || -> Result<()> {
-        let agent = config::download_agent();
+        let agent = bridge_http_agent(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS));
 
         let response = agent
             .get(download_url)
             .call()
             .context("下载更新器新版本失败")?;
 
-        // 获取文件大小
-        let total_size = response.body().content_length().unwrap_or(0);
-
-        let mut reader = response.into_body().into_reader();
-        let mut file = fs::File::create(&temp_path).context("创建临时文件失败")?;
-
-        let mut buf = [0u8; 65536];
-        let mut downloaded: u64 = 0;
-        {
-            use std::io::Write;
-            loop {
-                let n = reader.read(&mut buf).context("读取下载数据失败")?;
-                if n == 0 {
-                    break;
-                }
-                file.write_all(&buf[..n]).context("写入文件失败")?;
-                downloaded += n as u64;
-
-                if total_size > 0 {
-                    let fraction = downloaded as f64 / total_size as f64;
-                    let pct = 2 + (fraction * 8.0) as u32; // 2% ~ 10%
-                    let mb_done = downloaded as f64 / 1_048_576.0;
-                    let mb_total = total_size as f64 / 1_048_576.0;
-                    on_progress(crate::update::Progress::new(
-                        pct.min(10),
-                        format!("下载更新器... {mb_done:.1}/{mb_total:.1} MB"),
-                    ));
-                }
-            }
-        }
-        drop(file);
-
-        // 基本完整性校验：检查文件大小不为 0 且是有效的 PE 文件
-        let file_size = fs::metadata(&temp_path)
-            .context("读取下载文件信息失败")?
-            .len();
-        if file_size == 0 {
-            bail!("下载的更新器文件为空");
-        }
-        // 检查 PE 文件头 (MZ magic)
-        {
-            let mut f = fs::File::open(&temp_path).context("打开下载文件失败")?;
-            let mut magic = [0u8; 2];
-            if f.read_exact(&mut magic).is_err() || &magic != b"MZ" {
-                bail!("下载的文件不是有效的可执行文件");
-            }
-        }
-
-        // SHA256 校验
-        anyhow::ensure!(
-            file_size == info.size,
-            "updater size mismatch: expected {}, received {file_size}",
-            info.size
-        );
-        verify_executable_identity(
+        stage_download_reader(
+            response.into_body().into_reader(),
             &temp_path,
-            &ExecutableIdentity {
-                size: info.size,
-                sha256: expected_sha256.clone(),
-            },
-        )?;
-
-        Ok(())
+            &info,
+            on_progress,
+        )
     };
 
-    let result = retry::with_retry(
+    let result = bridge_retry_with(
         config::RETRY_MAX_ATTEMPTS,
-        config::RETRY_BASE_DELAY_SECS,
+        Duration::from_secs(config::RETRY_BASE_DELAY_SECS),
         "下载更新器",
         download_and_verify,
+        thread::sleep,
     );
 
-    if let Err(e) = result {
-        let _ = fs::remove_file(&temp_path);
-        return Err(e);
-    }
+    result?;
 
     on_progress(crate::update::Progress::new(10, "正在准备替换更新器..."));
 
-    spawn_update_helper(&exe_path, &temp_path, &info, channel).context("启动自更新 helper 失败")?;
+    if let Err(error) = spawn_update_helper(&exe_path, &temp_path, &info, channel) {
+        crate::observability::cleanup(remove_stale_file(&temp_path), temp_path.display());
+        return Err(error).context("启动自更新 helper 失败");
+    }
 
     on_progress(crate::update::Progress::new(
         11,
@@ -3176,3 +3122,170 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// This function owns only the staging file it creates, never a pre-existing path.
+fn stage_download_reader(
+    mut reader: impl Read,
+    temp_path: &Path,
+    info: &UpdaterVersionInfo,
+    on_progress: &dyn Fn(crate::update::Progress),
+) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp_path)
+        .context("创建更新器临时文件失败")?;
+    let result = (|| -> Result<()> {
+        let mut buf = [0u8; 65536];
+        let mut downloaded = 0u64;
+        loop {
+            // Probe one excess byte, but never read or write an unbounded response.
+            let capacity = (info.size - downloaded)
+                .saturating_add(1)
+                .min(buf.len() as u64) as usize;
+            let count = reader
+                .read(&mut buf[..capacity])
+                .map_err(ArtifactReadError)
+                .context("读取更新器下载数据失败")?;
+            if count == 0 {
+                break;
+            }
+            ensure!(
+                count as u64 <= info.size - downloaded,
+                "updater response exceeds declared size {}",
+                info.size
+            );
+            file.write_all(&buf[..count])
+                .context("写入更新器临时文件失败")?;
+            downloaded += count as u64;
+            on_progress(crate::update::Progress::new(
+                2 + ((downloaded as f64 / info.size as f64) * 8.0) as u32,
+                format!("下载更新器... {downloaded}/{} bytes", info.size),
+            ));
+        }
+        ensure!(
+            downloaded == info.size,
+            "updater size mismatch: expected {}, received {downloaded}",
+            info.size
+        );
+        file.sync_all().context("同步更新器临时文件失败")?;
+        Ok(())
+    })();
+    drop(file);
+    let result = result.and_then(|()| {
+        verify_executable_identity(
+            temp_path,
+            &ExecutableIdentity {
+                size: info.size,
+                sha256: info.sha256.clone(),
+            },
+        )
+    });
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => match remove_stale_file(temp_path) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(crate::observability::recovery(
+                error,
+                Err::<(), _>(cleanup),
+                temp_path.display(),
+                "remove rejected staging",
+            )),
+        },
+    }
+}
+
+#[derive(Debug)]
+struct ArtifactReadError(std::io::Error);
+impl std::fmt::Display for ArtifactReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+impl std::error::Error for ArtifactReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+fn transient_network_io(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::BrokenPipe
+    ) || error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<ureq::Error>())
+        .is_some_and(transient_http_error)
+}
+
+fn transient_http_error(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::Timeout(_) | ureq::Error::StatusCode(408 | 429 | 500 | 502 | 503 | 504) => {
+            true
+        }
+        ureq::Error::Io(error) => transient_network_io(error),
+        _ => false,
+    }
+}
+
+fn is_transient_network_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ureq::Error>()
+        .is_some_and(transient_http_error)
+        || error
+            .downcast_ref::<ArtifactReadError>()
+            .is_some_and(|error| transient_network_io(&error.0))
+}
+
+fn bridge_retry_with<T>(
+    attempts: u32,
+    delay: Duration,
+    label: &str,
+    mut operation: impl FnMut() -> Result<T>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<T> {
+    ensure!(attempts > 0, "retry budget must be positive");
+    for attempt in 1..=attempts {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let retry = attempt < attempts && is_transient_network_error(&error);
+                crate::observability::event(
+                    if retry {
+                        "selfupdate.network.retry"
+                    } else {
+                        "selfupdate.network.failed"
+                    },
+                    if retry {
+                        "transient network failure within finite retry budget"
+                    } else {
+                        "permanent failure or network retry budget exhausted"
+                    },
+                    format!("{error:#}"),
+                    label,
+                    if retry {
+                        "retry same validated operation"
+                    } else {
+                        "abort self-update"
+                    },
+                    format!("attempt {attempt}/{attempts}"),
+                );
+                if !retry {
+                    return Err(error)
+                        .with_context(|| format!("{label} failed after {attempt} attempts"));
+                }
+                sleep(delay.saturating_mul(2u32.saturating_pow(attempt - 1)));
+            }
+        }
+    }
+    unreachable!()
+}
+
+#[cfg(test)]
+#[path = "selfupdate_transfer_tests.rs"]
+mod transfer_tests;

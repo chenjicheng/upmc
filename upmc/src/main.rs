@@ -202,3 +202,33 @@ fn get_base_dir() -> PathBuf {
 
     new_dir
 }
+
+#[cfg(test)]
+mod transition_channel_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_legacy_dev_channel_survives_unflagged_first_hop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(config::CHANNEL_CONFIG_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let legacy = "{\"channel\":\"dev\",\"dev_build_id\":\"legacy-value\"}";
+        std::fs::write(&path, legacy).unwrap();
+        let selected = resolve_channel(dir.path());
+        assert_eq!(selected.channel, UpdateChannel::Dev);
+        assert_eq!(
+            config::updater_version_url(selected.channel),
+            "https://upmc.chenjicheng.cn/bridge/dev/version.json"
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn saved_channel_is_reloaded_for_both_release_channels() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for channel in [UpdateChannel::Stable, UpdateChannel::Dev] {
+            config::save_channel_config(dir.path(), &ChannelConfig { channel }).unwrap();
+            assert_eq!(resolve_channel(dir.path()).channel, channel);
+        }
+    }
+}

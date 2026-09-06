@@ -118,3 +118,162 @@ fn bridge_helper_rejects_zero_expected_size_before_path_access() {
         "unexpected error: {error:#}"
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn bridge_legacy_first_hop_startup_is_nonfatal_while_old_helper_is_mapped() {
+    use std::process::Stdio;
+    let dir = tempfile::TempDir::new().unwrap();
+    let target = dir.path().join("updater.exe");
+    let staging = target.with_extension("exe.new");
+    let helper = dir.path().join("upmc-update-helper.exe");
+    let ready = dir.path().join("ready");
+    fs::write(&target, b"MZ0.4.8 candidate").unwrap();
+    fs::write(&staging, b"MZold helper owned staging").unwrap();
+    fs::copy(current_exe_path().unwrap(), &helper).unwrap();
+    let mut child = restart_command(&helper, None)
+        .args([
+            "--exact",
+            "selfupdate::fallback_regression_tests::windows_mapped_helper_fixture",
+            "--ignored",
+        ])
+        .env("UPMC_TEST_SELFUPDATE_HELPER_READY", &ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let result = (|| -> Result<()> {
+        for _ in 0..100 {
+            if ready.try_exists()? {
+                break;
+            }
+            ensure!(
+                child.try_wait()?.is_none(),
+                "legacy helper fixture exited before readiness"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        ensure!(
+            ready.try_exists()?,
+            "legacy helper fixture readiness timed out"
+        );
+        ensure!(
+            !target.with_extension("exe.update.lock").try_exists()?,
+            "old helper unexpectedly acquired new lock"
+        );
+        assert!(
+            startup_health_ack_from(&[target.to_string_lossy().into_owned()], &target)?.is_none()
+        );
+        crate::observability::take_events();
+        cleanup_old_exe_with(Ok(target.clone()));
+        ensure!(
+            staging.try_exists()? && helper.try_exists()?,
+            "normal startup deleted active first-hop state"
+        );
+        let events = crate::observability::take_events();
+        ensure!(
+            events
+                .iter()
+                .any(|event| event["identifier"] == "selfupdate.helper_guard_failed"),
+            "first-hop cleanup contention was silent"
+        );
+        ensure!(
+            !events
+                .iter()
+                .any(|event| event["identifier"] == "startup.fatal"),
+            "first-hop cleanup became fatal"
+        );
+        Ok(())
+    })();
+    let stopped = terminate_candidate(&mut child);
+    result.unwrap();
+    stopped.unwrap();
+    cleanup_self_update_artifacts(&target).unwrap();
+    assert!(!staging.exists() && !helper.exists());
+}
+
+#[test]
+#[ignore = "isolated child fixture invoked by bridge_real_child_health_contract"]
+fn bridge_candidate_health_fixture() {
+    let mode = std::env::var("UPMC_TEST_HEALTH_MODE").unwrap();
+    if mode == "exit" {
+        return;
+    }
+    if mode == "healthy" {
+        let path = std::env::var("UPMC_TEST_HEALTH_PATH").unwrap();
+        let token = std::env::var("UPMC_TEST_HEALTH_TOKEN").unwrap();
+        let executable = current_exe_path().unwrap();
+        let args = vec![
+            executable.to_string_lossy().into_owned(),
+            SELF_UPDATE_HEALTH_ACK_ARG.to_owned(),
+            path,
+            SELF_UPDATE_HEALTH_TOKEN_ARG.to_owned(),
+            token,
+        ];
+        let ack = startup_health_ack_from(&args, &executable)
+            .unwrap()
+            .unwrap();
+        write_health_ack(&ack).unwrap();
+    }
+    thread::sleep(Duration::from_secs(5));
+}
+
+#[test]
+fn bridge_real_child_health_contract() {
+    use std::process::Stdio;
+    for mode in ["healthy", "exit", "withhold"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("updater.exe");
+        fs::copy(current_exe_path().unwrap(), &target).unwrap();
+        let expected = executable_identity(&target).unwrap();
+        let ack = new_startup_health_ack(&target, &expected).unwrap();
+        let mut child = restart_command(&target, None)
+            .args([
+                "--exact",
+                "selfupdate::helper_regression_tests::bridge_candidate_health_fixture",
+                "--ignored",
+            ])
+            .env("UPMC_TEST_HEALTH_MODE", mode)
+            .env("UPMC_TEST_HEALTH_PATH", &ack.path)
+            .env("UPMC_TEST_HEALTH_TOKEN", &ack.token)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let result = wait_for_candidate_health_with(
+            &ack,
+            if mode == "withhold" { 3 } else { 100 },
+            Duration::from_millis(10),
+            || {
+                child
+                    .try_wait()
+                    .map(|status| status.is_some())
+                    .map_err(Into::into)
+            },
+            read_health_ack,
+            thread::sleep,
+        );
+        let stopped = terminate_candidate(&mut child);
+        stopped.unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+        if mode == "healthy" {
+            result.unwrap();
+            assert_eq!(
+                fs::read_to_string(&ack.path).unwrap(),
+                format!("UPMC_SELF_UPDATE_HEALTH_V1\n{}\n", ack.token)
+            );
+        } else {
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains(if mode == "exit" {
+                    "提前退出"
+                } else {
+                    "超时"
+                }),
+                "{mode}: {error}"
+            );
+        }
+    }
+}

@@ -73,42 +73,6 @@ pub fn cleanup<E: Display>(result: Result<(), E>, path: impl Display) {
     }
 }
 
-/// A failed validation can only disable reuse, never authorize an artifact.
-pub fn validated<T>(
-    result: anyhow::Result<T>,
-    identifier: &'static str,
-    path: impl Display,
-) -> bool {
-    match result {
-        Ok(_) => true,
-        Err(error) => {
-            event(
-                identifier,
-                "validation failed; reuse denied",
-                format!("{error:#}"),
-                &path,
-                "require repair or deny operation",
-                &path,
-            );
-            false
-        }
-    }
-}
-
-/// Retain ownership records after poisoning so cleanup can still own its child.
-/// Callers must validate real process/file state before authorizing any action.
-pub fn poisoned<T>(error: std::sync::PoisonError<T>, identifier: &'static str) -> T {
-    event(
-        identifier,
-        "mutex poisoned; ownership retained for validated recovery",
-        error.to_string(),
-        "unpoisoned state",
-        "revalidate retained state",
-        identifier,
-    );
-    error.into_inner()
-}
-
 /// Preserve both failures when recovering an already failed operation.
 pub fn recovery<T>(
     original: anyhow::Error,

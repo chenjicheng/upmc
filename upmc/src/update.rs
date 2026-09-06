@@ -10,7 +10,7 @@
 // 通过回调函数 (callback) 向 GUI 报告进度。
 // ============================================================
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 use crate::bootstrap;
@@ -71,7 +71,17 @@ pub fn run_update(
     // ─────────────────────────────────────────────
     on_progress(Progress::new(1, "检查更新器版本..."));
 
-    match selfupdate::check_and_update(channel_config.channel, on_progress) {
+    proceed_after_self_update(
+        selfupdate::check_and_update(channel_config.channel, on_progress),
+        || run_game_update(base_dir, on_progress),
+    )
+}
+
+fn proceed_after_self_update(
+    self_update: Result<selfupdate::SelfUpdateResult>,
+    run_game: impl FnOnce() -> Result<UpdateResult>,
+) -> Result<UpdateResult> {
+    match self_update {
         Ok(selfupdate::SelfUpdateResult::Restarting) => {
             // 新版已下载并启动，当前进程应直接退出（不启动 PCL2）
             return Ok(UpdateResult::SelfUpdateRestarting);
@@ -80,11 +90,86 @@ pub fn run_update(
             // 不需要更新，继续
         }
         Err(e) => {
-            // 自更新失败不阻塞，记录日志继续
-            eprintln!("自更新检查失败（不影响正常使用）: {e:#}");
+            crate::observability::event(
+                "selfupdate.rejected",
+                "self-update failed; game distribution must not continue",
+                format!("{e:#}"),
+                "bridge self-update",
+                "abort game/Packwiz update",
+                std::process::id(),
+            );
+            return Err(e);
         }
     }
 
+    run_game()
+}
+
+#[cfg(test)]
+mod self_update_gate_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn rejected_self_update_stops_game_work_and_preserves_original_error() {
+        crate::observability::take_events();
+        let game_calls = Cell::new(0);
+        let error = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "manifest SHA256 rejected",
+        ))
+        .context("bridge check");
+        let result = proceed_after_self_update(Err(error), || {
+            game_calls.set(game_calls.get() + 1);
+            Ok(UpdateResult::Offline)
+        });
+        assert_eq!(
+            game_calls.get(),
+            0,
+            "self-update rejection fell through into game/Packwiz work"
+        );
+        let error = result
+            .err()
+            .expect("self-update rejection was reported as success");
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::InvalidData)
+        );
+        assert!(format!("{error:#}").contains("manifest SHA256 rejected"));
+        let events = crate::observability::take_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["identifier"], "selfupdate.rejected");
+        assert_eq!(events[0]["level"], "ERROR");
+        assert!(
+            events[0]["original_error"]
+                .as_str()
+                .unwrap()
+                .contains("manifest SHA256 rejected")
+        );
+    }
+
+    #[test]
+    fn no_update_runs_game_once_and_restart_runs_no_game_work() {
+        let calls = Cell::new(0);
+        let result = proceed_after_self_update(Ok(selfupdate::SelfUpdateResult::UpToDate), || {
+            calls.set(calls.get() + 1);
+            Ok(UpdateResult::Offline)
+        })
+        .unwrap();
+        assert!(matches!(result, UpdateResult::Offline));
+        assert_eq!(calls.get(), 1);
+        let result =
+            proceed_after_self_update(Ok(selfupdate::SelfUpdateResult::Restarting), || {
+                panic!("restart ran game work")
+            })
+            .unwrap();
+        assert!(matches!(result, UpdateResult::SelfUpdateRestarting));
+    }
+}
+
+fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<UpdateResult> {
     // ─────────────────────────────────────────────
     // 阶段 0+1: 拉取远程版本 + 首次安装
     // ─────────────────────────────────────────────
@@ -125,19 +210,22 @@ pub fn run_update(
     // ─────────────────────────────────────────────
     let local = version::read_local_version(base_dir);
 
-    on_progress(Progress::new(55, format!(
-        "远程版本: MC {} / Fabric {}",
-        remote.mc_version, remote.fabric_version
-    )));
+    on_progress(Progress::new(
+        55,
+        format!(
+            "远程版本: MC {} / Fabric {}",
+            remote.mc_version, remote.fabric_version
+        ),
+    ));
 
     // ─────────────────────────────────────────────
     // 阶段 2: 大版本升级（如果需要）
     // ─────────────────────────────────────────────
     if version::needs_version_upgrade(&remote, &local) {
-        on_progress(Progress::new(58, format!(
-            "正在升级到 MC {} ...",
-            remote.mc_version
-        )));
+        on_progress(Progress::new(
+            58,
+            format!("正在升级到 MC {} ...", remote.mc_version),
+        ));
 
         // 2a. 安装新版本 Fabric
         on_progress(Progress::new(60, "正在安装 Fabric..."));
