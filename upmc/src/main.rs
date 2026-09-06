@@ -18,6 +18,7 @@ mod config;
 mod discord_proxy;
 mod fabric;
 mod gui;
+mod observability;
 mod packwiz;
 mod retry;
 mod selfupdate;
@@ -34,13 +35,37 @@ fn main() {
         Ok(true) => return,
         Ok(false) => {}
         Err(e) => {
+            observability::event(
+                "startup.fatal",
+                "self-update helper failed",
+                format!("{e:#}"),
+                "apply-self-update",
+                "exit with failure",
+                std::process::id(),
+            );
             eprintln!("自更新 helper 执行失败: {e:#}");
             std::process::exit(1);
         }
     }
 
-    // 清理上次自更新残留的临时文件（.new / .old / helper）
-    selfupdate::cleanup_old_exe();
+    let startup_health = match selfupdate::startup_health_ack_from_args() {
+        Ok(value) => value,
+        Err(error) => {
+            observability::event(
+                "startup.fatal",
+                "invalid startup health arguments",
+                format!("{error:#}"),
+                "startup health acknowledgement",
+                "exit with failure",
+                std::process::id(),
+            );
+            std::process::exit(1);
+        }
+    };
+    // A supervised candidate preserves all active transaction files for its helper.
+    if startup_health.is_none() {
+        selfupdate::cleanup_old_exe();
+    }
 
     // 获取安装基准路径（用户文档文件夹）
     // 如果旧位置有安装，先迁移到新位置
@@ -48,6 +73,10 @@ fn main() {
 
     // 解析命令行参数，确定更新通道
     let channel_config = resolve_channel(&base_dir);
+
+    if let Some(ack) = startup_health {
+        selfupdate::acknowledge_health_when_window_ready(ack);
+    }
 
     // 启动 GUI（内部会开后台线程执行更新）
     gui::UpdaterApp::run(base_dir, channel_config);
