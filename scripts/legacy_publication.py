@@ -28,6 +28,10 @@ class PublicationError(RuntimeError):
     pass
 
 
+def publication_allowed(event_name, ref, repository):
+    return event_name == "push" and ref == "refs/tags/" + TAG and repository == REPOSITORY
+
+
 def _require(condition, message):
     if not condition:
         raise PublicationError(message)
@@ -255,23 +259,30 @@ def publish_pages(pages, descriptor, expected_head):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("validate-source", "publish"))
-    parser.add_argument("--source", required=True, type=Path)
-    parser.add_argument("--tag", required=True)
-    parser.add_argument("--build-id", required=True)
-    parser.add_argument("--ref", required=True)
-    parser.add_argument("--channel", required=True)
-    parser.add_argument("--artifact", type=Path)
-    parser.add_argument("--pages", type=Path)
-    parser.add_argument("--expected-pages-head")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("ci-context", help="Print the build job's fail-closed publication output")
+    for command in ("validate-source", "publish"):
+        command_parser = commands.add_parser(command)
+        command_parser.add_argument("--source", required=True, type=Path)
+        command_parser.add_argument("--tag", required=True)
+        command_parser.add_argument("--build-id", required=True)
+        command_parser.add_argument("--ref", required=True)
+        command_parser.add_argument("--channel", required=True)
+        if command == "publish":
+            command_parser.add_argument("--artifact", required=True, type=Path)
+            command_parser.add_argument("--pages", required=True, type=Path)
+            command_parser.add_argument("--expected-pages-head", required=True)
     args = parser.parse_args()
+    if args.command == "ci-context":
+        allowed = publication_allowed(os.getenv("GITHUB_EVENT_NAME"), os.getenv("GITHUB_REF"),
+                                      os.getenv("GITHUB_REPOSITORY"))
+        print("publish=" + str(allowed).lower())
+        return 0
     try:
         version = validate_source(args.source, args.tag, args.build_id, args.ref, args.channel)
         if args.command == "validate-source":
             print(f"Validated legacy {version} source at {args.build_id}")
             return 0
-        _require(args.artifact and args.pages and args.expected_pages_head,
-                 "publish requires --artifact, --pages and --expected-pages-head")
         descriptor = ensure_release(args.artifact, version, args.tag, args.build_id)
         commit = publish_pages(args.pages, descriptor, args.expected_pages_head)
         print(json.dumps({"pages_commit": commit, "descriptor": descriptor}, indent=2))

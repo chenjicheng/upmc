@@ -1,331 +1,150 @@
-# ============================================================
-# GitHub Actions: 编译更新器并发布
-# ============================================================
-# 触发条件：
-#   - 推送 v* 格式的 tag → 编译 + 发布 stable Release + 更新 Pages
-#   - 推送 dev 分支      → 编译 + 上传到 dev-latest Release + 更新 Pages
-#   - 推送 main 分支     → 仅编译（预热 Cargo 缓存）
-#
-# 部署策略：
-#   使用 gh-pages 分支托管 GitHub Pages，增量更新不会互相覆盖：
-#     /version.json       ← stable 通道（tag 触发时更新）
-#     /dev/version.json   ← dev 通道（dev 分支推送时更新）
-#     /CNAME              ← 自定义域名
-#
-# 前提：
-#   - GitHub Releases 中已存在名为 "tools" 的 Release
-#   - tag 版本号与 upmc/Cargo.toml 中的 version 一致
-#   - 仓库 Settings → Pages → Source 选择 "Deploy from a branch" → gh-pages
-#   - DNS: upmc.chenjicheng.cn CNAME → <username>.github.io
-# ============================================================
-
-name: 编译更新器
+# One-time legacy transition. Branch/manual runs never publish.
+# Later native promotion must preserve the two original entry documents.
+name: Build legacy updater
 
 on:
   push:
-    tags: ['v*']
-    # main 和 dev 分支推送时也运行
-    # main: 预热 Cargo 缓存（tag push 只能读取默认分支或同 tag 的缓存）
-    # dev: 编译并发布开发版本
+    tags: ['v0.4.8']
     branches: [main, dev]
-
-  # 允许手动触发（Actions 页面点 "Run workflow"）
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-# 串行执行，避免并发冲突
-concurrency:
-  group: build-updater
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  # ─────────────────────────────────────────────
-  # 编译（所有触发方式共用）
-  # ─────────────────────────────────────────────
   build:
-    runs-on: windows-latest
-
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      publish: ${{ steps.context.outputs.publish }}
+    env:
+      UPMC_BUILD_ID: ${{ github.sha }}
+      UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
     steps:
-      - name: 检出代码
+      - name: Check out the exact source and tag
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: 校验版本号一致
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test publication behavior without remote mutations
+        run: python -m unittest discover -s scripts/tests -v
+
+      - name: Resolve publication boundary
+        id: context
         shell: pwsh
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          $tagVersion = $env:TAG_NAME.TrimStart("v")
-          $cargoContent = Get-Content upmc/Cargo.toml -Raw
-          if ($cargoContent -match '(?s)\[package\].*?version\s*=\s*"([^"]+)"') {
-            $cargoVersion = $Matches[1]
-          } else {
-            Write-Error "无法从 Cargo.toml 读取版本号"
-            exit 1
-          }
-          if ($tagVersion -ne $cargoVersion) {
-            Write-Error "Tag 版本 ($tagVersion) 与 Cargo.toml 版本 ($cargoVersion) 不一致！请确保两者一致后重新打 tag。"
-            exit 1
-          }
-          Write-Host "版本号校验通过: $tagVersion" -ForegroundColor Green
+        run: python scripts/legacy_publication.py ci-context >> $env:GITHUB_OUTPUT
 
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Validate the transition source before building
+        if: steps.context.outputs.publish == 'true'
+        shell: pwsh
+        run: >-
+          python scripts/legacy_publication.py validate-source
+          --source . --tag "$env:GITHUB_REF_NAME" --build-id "$env:GITHUB_SHA"
+          --ref "$env:GITHUB_REF" --channel stable
 
-      - name: 缓存 Cargo
+      - name: Install the validated Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache locked Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
           cache-on-failure: true
-          # tag 触发时 ref 不是分支，需要固定 key 才能跨 tag 复用缓存
-          shared-key: updater-release
+          shared-key: legacy-048-windows-2022-rust-1.95.0
 
-      - name: 编译代理 DLL（upmc 通过 include_bytes 嵌入）
-        run: cargo build --release -p discord-proxy-dll -p force-proxy-dll
+      - name: Build the matching embedded proxy DLL pair
+        run: cargo build --locked --release -p discord-proxy-dll -p force-proxy-dll
 
-      - name: 编译 updater（内嵌 DLL）
+      - name: Test the legacy workspace
+        run: cargo test --locked --workspace
+
+      - name: Build the updater with both source DLLs embedded
         env:
-          UPMC_BUILD_ID: ${{ github.sha }}
-          UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
           UPMC_SUB_URL: ${{ secrets.UPMC_SUB_URL }}
-        run: cargo build --release -p upmc
+        run: cargo build --locked --release -p upmc
 
-      - name: 准备产物
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+      - name: Prepare the release executable
+        if: steps.context.outputs.publish == 'true'
         shell: pwsh
         run: |
-          Copy-Item target/release/upmc.exe updater.exe -Force
+          New-Item -ItemType Directory -Path _artifacts | Out-Null
+          Copy-Item -LiteralPath target/release/upmc.exe -Destination _artifacts/updater.exe
 
-      - name: 可选 Authenticode 签名
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+      - name: Apply optional Authenticode signing before recording artifact bytes
+        if: steps.context.outputs.publish == 'true'
         shell: pwsh
         env:
           WINDOWS_SIGN_CERT_BASE64: ${{ secrets.WINDOWS_SIGN_CERT_BASE64 }}
           WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGN_CERT_PASSWORD }}
-        run: |
-          ./scripts/sign-updater.ps1 -FilePath updater.exe
+        run: ./scripts/sign-updater.ps1 -FilePath _artifacts/updater.exe
 
-      - name: 计算 SHA256
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
-        shell: pwsh
-        run: |
-          $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
-          $hash = (Get-FileHash updater.exe -Algorithm SHA256).Hash.ToLower()
-          Write-Host "updater.exe: $size MB, SHA256: $hash"
-          $hash | Out-File -FilePath sha256.txt -NoNewline -Encoding ascii
-
-      - name: 上传 SHA256
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+      - name: Upload the actual final executable
+        if: steps.context.outputs.publish == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: sha256
-          path: sha256.txt
+          name: legacy-updater-${{ github.sha }}
+          path: _artifacts/updater.exe
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: 上传到 tools Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 如果 tools Release 不存在则创建
-          gh release view tools 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create tools updater.exe --title "Tools" --notes "工具发布"
-          } else {
-            gh release upload tools updater.exe --clobber
-          }
-          Write-Host "已上传到 tools Release" -ForegroundColor Green
-
-      - name: 创建或更新正式 Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          # 检查 Release 是否已存在，存在则上传覆盖，不存在则创建
-          gh release view $env:TAG_NAME 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $env:TAG_NAME updater.exe `
-              --title $env:TAG_NAME `
-              --generate-notes
-          } else {
-            gh release upload $env:TAG_NAME updater.exe --clobber
-          }
-          Write-Host "已创建/更新 Release $env:TAG_NAME" -ForegroundColor Green
-
-      - name: 上传到 dev-latest Release
-        if: github.ref == 'refs/heads/dev'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 产物已在"准备产物"步骤中复制并可选签名
-          $size = [math]::Round((Get-Item updater.exe).Length / 1MB, 2)
-          Write-Host "产物大小: $size MB"
-          # 创建或更新 dev-latest pre-release
-          gh release view dev-latest 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create dev-latest updater.exe `
-              --prerelease `
-              --title "Dev Build" `
-              --notes "滚动更新的开发版本构建，跟随 dev 分支最新提交。"
-          } else {
-            gh release upload dev-latest updater.exe --clobber
-          }
-          Write-Host "已上传到 dev-latest Release" -ForegroundColor Green
-
-  # ─────────────────────────────────────────────
-  # 部署 stable 通道到 gh-pages（tag 触发）
-  # ─────────────────────────────────────────────
-  deploy-stable:
+  publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-
+    if: >-
+      needs.build.outputs.publish == 'true' && github.event_name == 'push' &&
+      github.ref == 'refs/tags/v0.4.8' && github.repository == 'chenjicheng/upmc'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pages: write
+    concurrency:
+      group: upmc-pages-publication
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: 检出 gh-pages 分支
+      - name: Check out the exact publication code and source tag
+        uses: actions/checkout@v4
+        with:
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out existing Pages without initialization or fallback
         uses: actions/checkout@v4
         with:
           ref: gh-pages
+          path: pages
           fetch-depth: 1
-        continue-on-error: true
 
-      - name: 初始化 gh-pages（如果不存在）
-        run: |
-          if [ ! -f CNAME ]; then
-            echo "gh-pages 分支不存在或为空，初始化..."
-            git checkout --orphan gh-pages 2>/dev/null || true
-            git rm -rf . 2>/dev/null || true
-          fi
-
-      - name: 检出主分支的 CNAME
-        uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v5
         with:
-          ref: ${{ github.ref }}
-          path: _source
-          sparse-checkout: CNAME
+          python-version: '3.12'
 
-      - name: 下载 SHA256
+      - name: Download this run's actual final executable
         uses: actions/download-artifact@v4
         with:
-          name: sha256
+          name: legacy-updater-${{ github.sha }}
+          path: _artifacts
 
-      - name: 生成 stable version.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REF_NAME: ${{ github.ref_name }}
+      - name: Verify the immutable Release and atomically publish all four descriptors
+        shell: bash
         run: |
-          # 从当前 tag 的 Release 获取信息
-          RELEASE_JSON=$(gh release view "$REF_NAME" --json tagName,assets)
-          TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tagName')
-          VERSION="${TAG_NAME#v}"
-          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
-          DOWNLOAD_URL="https://gh.chenjicheng.cn/${DOWNLOAD_URL}"
+          git -C pages config user.name 'github-actions[bot]'
+          git -C pages config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          expected_head="$(git -C pages rev-parse HEAD)"
+          python source/scripts/legacy_publication.py publish \
+            --source source --tag "$GITHUB_REF_NAME" --build-id "$GITHUB_SHA" \
+            --ref "$GITHUB_REF" --channel stable --artifact _artifacts/updater.exe \
+            --pages pages --expected-pages-head "$expected_head"
 
-          BUILD_ID="${GITHUB_SHA}"
-          SHA256=$(cat sha256.txt)
-
-          # 使用 jq 生成 JSON，避免手工拼接导致的格式风险
-          jq -n \
-            --arg version "$VERSION" \
-            --arg download_url "$DOWNLOAD_URL" \
-            --arg build_id "$BUILD_ID" \
-            --arg sha256 "$SHA256" \
-            '{version: $version, download_url: $download_url, build_id: $build_id, sha256: $sha256}' \
-            > version.json
-
-          cp _source/CNAME CNAME 2>/dev/null || true
-          rm -rf _source
-
-          echo "=== version.json ==="
-          cat version.json
-
-      - name: 提交并推送到 gh-pages
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add version.json
-          [ -f CNAME ] && git add CNAME
-          git diff --cached --quiet && echo "无变更" || git commit -m "deploy stable $REF_NAME"
-          git push origin gh-pages
-
-  # ─────────────────────────────────────────────
-  # 部署 dev 通道到 gh-pages（dev 分支触发）
-  # ─────────────────────────────────────────────
-  deploy-dev:
-    needs: build
-    if: github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 检出 gh-pages 分支
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          fetch-depth: 1
-        continue-on-error: true
-
-      - name: 初始化 gh-pages（如果不存在）
-        run: |
-          if [ ! -f CNAME ]; then
-            echo "gh-pages 分支不存在或为空，初始化..."
-            git checkout --orphan gh-pages 2>/dev/null || true
-            git rm -rf . 2>/dev/null || true
-          fi
-
-      - name: 检出主分支的 CNAME
-        uses: actions/checkout@v4
-        with:
-          ref: dev
-          path: _source
-          sparse-checkout: CNAME
-
-      - name: 下载 SHA256
-        uses: actions/download-artifact@v4
-        with:
-          name: sha256
-
-      - name: 生成 dev version.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 获取 dev-latest release 的下载 URL
-          RELEASE_JSON=$(gh release view dev-latest --json assets 2>/dev/null || echo '{"assets":[]}')
-          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "updater.exe") | .url')
-          if [ -n "$DOWNLOAD_URL" ]; then
-            DOWNLOAD_URL="https://gh.chenjicheng.cn/${DOWNLOAD_URL}"
-          else
-            DOWNLOAD_URL=""
-          fi
-
-          BUILD_ID="${GITHUB_SHA}"
-          SHA256=$(cat sha256.txt)
-
-          # 使用 jq 生成 JSON
-          mkdir -p dev
-          jq -n \
-            --arg download_url "$DOWNLOAD_URL" \
-            --arg build_id "$BUILD_ID" \
-            --arg sha256 "$SHA256" \
-            '{download_url: $download_url, build_id: $build_id, sha256: $sha256}' \
-            > dev/version.json
-
-          cp _source/CNAME CNAME 2>/dev/null || true
-          rm -rf _source
-
-          echo "=== dev/version.json ==="
-          cat dev/version.json
-
-      - name: 提交并推送到 gh-pages
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dev/version.json
-          [ -f CNAME ] && git add CNAME
-          git diff --cached --quiet && echo "无变更" || git commit -m "deploy dev build ${GITHUB_SHA:0:7}"
-          git push origin gh-pages
+      # GITHUB_TOKEN pushes do not automatically trigger a Pages build.
+      - name: Request a build of the configured Pages source
+        run: gh api --hostname github.com --method POST repos/chenjicheng/upmc/pages/builds
