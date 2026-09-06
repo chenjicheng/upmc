@@ -1,11 +1,45 @@
 """CI boundary behavior plus supplemental workflow wiring checks."""
 from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
 import unittest
 
 from test_legacy_publication import pub
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_ci_context_cli_reads_the_actual_event_environment(self):
+        helper = Path(__file__).resolve().parents[1] / "legacy_publication.py"
+        for event, expected in (("push", "true"), ("workflow_dispatch", "false")):
+            env = dict(os.environ, GITHUB_EVENT_NAME=event, GITHUB_REF="refs/tags/v0.4.8",
+                       GITHUB_REPOSITORY="chenjicheng/upmc")
+            result = subprocess.run([sys.executable, str(helper), "ci-context"],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "publish=" + expected)
+
+    def test_actual_pages_activation_step_reports_failure_and_does_not_continue(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/build-updater.yml").read_text(encoding="utf-8")
+        commands = [line.strip().removeprefix("run: ") for line in workflow.splitlines()
+                    if line.strip().startswith("run: gh api ") and "/pages/builds" in line]
+        self.assertEqual(len(commands), 1)
+        self.assertIn("pages: write", workflow)
+        bash = str(Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Git/bin/bash.exe") if os.name == "nt" else shutil.which("bash")
+        self.assertTrue(bash and Path(bash).is_file(), "Git Bash or bash is required for the activation step contract test")
+        for exit_code in (0, 23):
+            # Run the actual workflow command under Actions' bash error mode.
+            # Only the external gh effect is replaced with a shell fixture.
+            script = ("gh() { printf '%s\\n' \"$@\"; return " + str(exit_code) + "; }\n"
+                      + commands[0] + "\nprintf 'ACTIVATION_STEP_COMPLETED\\n'\n")
+            result = subprocess.run([bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, exit_code, result.stderr)
+            self.assertIn("POST", result.stdout)
+            self.assertIn("repos/chenjicheng/upmc/pages/builds", result.stdout)
+            self.assertEqual("ACTIVATION_STEP_COMPLETED" in result.stdout, exit_code == 0)
+
     def test_only_official_repository_exact_tag_push_can_publish(self):
         self.assertTrue(pub.publication_allowed("push", "refs/tags/v0.4.8", "chenjicheng/upmc"))
         for event, ref, repository in [
