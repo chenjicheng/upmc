@@ -26,3 +26,8 @@ Desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Isolated release worktrees and Python helper validation caches
+.release-0.4.8/
+__pycache__/
+*.py[cod]

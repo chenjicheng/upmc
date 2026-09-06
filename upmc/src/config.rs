@@ -35,12 +35,12 @@ pub const TRUSTED_DOWNLOAD_HOST_SUFFIXES: &[&str] = &[
 /// 更新器版本信息 URL — 稳定通道（GitHub Pages 托管，upmc 仓库）
 /// 返回 JSON: { "version": "x.y.z", "download_url": "..." }
 pub const UPDATER_VERSION_URL: &str =
-    "https://upmc.chenjicheng.cn/version.json";
+    "https://upmc.chenjicheng.cn/bridge/version.json";
 
 /// 更新器版本信息 URL — 开发通道
 /// 返回 JSON: { "version": "x.y.z", "download_url": "...", "build_id": "a1b2c3d" }
 pub const UPDATER_DEV_VERSION_URL: &str =
-    "https://upmc.chenjicheng.cn/dev/version.json";
+    "https://upmc.chenjicheng.cn/bridge/dev/version.json";
 
 // ── 更新通道 ──
 
