@@ -1762,7 +1762,7 @@ pub fn check_and_update(
 
     on_progress(crate::update::Progress::new(
         11,
-        "更新器已更新，正在重启...",
+        "已交接更新辅助程序，正在等待替换并重启...",
     ));
 
     Ok(SelfUpdateResult::Restarting)
