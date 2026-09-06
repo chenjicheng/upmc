@@ -24,9 +24,13 @@ Use standard Rust formatting with 4-space indentation. Follow Rust naming conven
 
 ## Testing Guidelines
 
+Follow the global mandatory test-first policy. New behavior and fixes require behavioral RED before implementation, then GREEN and relevant regression checks. Build both embedded release DLLs before compiling the main client, including the first test run in a new worktree. See `docs/0.4.8-transition-release.md` for this maintenance release's scope and contracts.
+
 Add focused unit tests beside changed logic in `#[cfg(test)]` modules. Test names should describe behavior, such as `validate_download_rejects_http_url` or `parse_version_accepts_full_schema`. Cover parsing, validation, retry, path handling, and security-sensitive branches when modified. If release packaging, embedded DLLs, or `server.json` compatibility changes, include a release build in validation.
 
 ## Commit & Pull Request Guidelines
+
+Follow the global fine-grained commit and isolated sub-agent review policies. Each implementing sub-agent uses its own worktree and branch. Keep tests with the behavior they verify, order shared prerequisites before consumers, and have an independent Review Agent approve exact commits before the primary agent integrates them. Large changes still require cohesive commits.
 
 Use short imperative commit titles matching the existing history, for example `Balance secondary action buttons` or `Add SHA256 fields to Downloads schema`. PRs should summarize the behavior change, list validation commands, link related issues, and include screenshots for UI changes. Call out security, configuration, or release artifact implications explicitly.
 
