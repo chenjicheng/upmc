@@ -1,12 +1,11 @@
 [package]
 name = "upmc"
-version = "0.4.8"
+version = "0.5.0"
 edition = "2024"
 
 [dependencies]
-# GUI: 轻量级 Win32 原生窗口框架
-native-windows-gui = "1.0"
-native-windows-derive = "1.0"
+# Native Slint interface; live-preview is deliberately not a default feature.
+slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "accessibility", "unstable-winit-030"] }
 
 # HTTP 请求: 纯 Rust 实现，无需 OpenSSL
 ureq = "3.2.0"
@@ -40,7 +39,9 @@ winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi"
 [build-dependencies]
 # 嵌入 exe 图标和版本信息
 winresource = "0.1"
+slint-build = "=1.17.1"
 
 [dev-dependencies]
 tempfile = "3"
+i-slint-backend-testing = "=1.17.1"
 

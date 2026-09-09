@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::{ProxyConfig, discord};
+use crate::{discord, ProxyConfig};
 
 const DWRITE_DLL: &str = "DWrite.dll";
 const FORCE_PROXY_DLL: &str = "force-proxy.dll";
@@ -79,12 +79,57 @@ pub fn ensure_installed(
     config: &ProxyConfig,
 ) -> Result<()> {
     let dirs = discord::get_app_dirs()?;
-    for dir in &dirs {
+    ensure_in_dirs(
+        &dirs,
+        proxy_dll,
+        force_proxy_dll,
+        config,
+        discord::kill,
+        discord::launch,
+    )
+}
+
+fn ensure_in_dirs(
+    dirs: &[std::path::PathBuf],
+    proxy_dll: &[u8],
+    force_proxy_dll: &[u8],
+    config: &ProxyConfig,
+    stop: impl FnOnce() -> Result<()>,
+    start: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let text = config.to_proxy_txt();
+    let mut changes = Vec::new();
+    for dir in dirs {
         let missing_dll = !dir.join(DWRITE_DLL).exists();
         let missing_fp = !dir.join(FORCE_PROXY_DLL).exists();
-        if missing_dll || missing_fp {
+        let changed = match std::fs::read_to_string(dir.join(PROXY_TXT)) {
+            Ok(existing) => existing != text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to read {PROXY_TXT} in {}", dir.display()))
+            }
+        };
+        changes.push((dir, missing_dll || missing_fp, changed));
+    }
+    // Discord consumes these environment settings at process startup.
+    // Reload only when an installed proxy's configuration actually changes.
+    let reload = changes
+        .iter()
+        .any(|(dir, _, changed)| *changed && dir.join(DWRITE_DLL).exists());
+    if reload {
+        stop().context("Failed to stop Discord for proxy configuration update")?;
+    }
+    for (dir, missing, changed) in changes {
+        if missing {
             install_to_dir(dir, proxy_dll, force_proxy_dll, config)?;
+        } else if changed {
+            std::fs::write(dir.join(PROXY_TXT), &text)
+                .with_context(|| format!("Failed to write {PROXY_TXT} to {}", dir.display()))?;
         }
+    }
+    if reload {
+        start().context("Failed to restart Discord after proxy configuration update")?;
     }
     Ok(())
 }
@@ -108,5 +153,96 @@ fn remove_from_dir(dir: &Path) {
         if path.exists() {
             let _ = std::fs::remove_file(&path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn existing_udp_config_is_updated_and_reloaded_only_when_changed() {
+        let root = std::env::temp_dir().join(format!(
+            "upmc-udp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = ProxyConfig {
+            address: "127.0.0.1".into(),
+            port: 10808,
+            login: None,
+            password: None,
+            udp: false,
+        };
+        install_to_dir(&root, b"dll", b"force", &config).unwrap();
+        config.udp = true;
+        let calls = std::cell::RefCell::new(Vec::new());
+        ensure_in_dirs(
+            &[root.clone()],
+            b"dll",
+            b"force",
+            &config,
+            || {
+                calls.borrow_mut().push("stop");
+                Ok(())
+            },
+            || {
+                assert!(std::fs::read_to_string(root.join(PROXY_TXT))
+                    .unwrap()
+                    .contains("SOCKS5_PROXY_UDP=true"));
+                calls.borrow_mut().push("start");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["stop", "start"]);
+        assert_eq!(std::fs::read(root.join(DWRITE_DLL)).unwrap(), b"dll");
+        ensure_in_dirs(
+            &[root.clone()],
+            b"dll",
+            b"force",
+            &config,
+            || panic!("unchanged stop"),
+            || panic!("unchanged start"),
+        )
+        .unwrap();
+        config.udp = false;
+        let error = ensure_in_dirs(
+            &[root.clone()],
+            b"dll",
+            b"force",
+            &config,
+            || anyhow::bail!("stop denied"),
+            || panic!("start after stop failure"),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("stop denied"));
+        assert!(std::fs::read_to_string(root.join(PROXY_TXT))
+            .unwrap()
+            .contains("SOCKS5_PROXY_UDP=true"));
+        let error = ensure_in_dirs(
+            &[root.clone()],
+            b"dll",
+            b"force",
+            &config,
+            || {
+                let mut attrs = std::fs::metadata(root.join(PROXY_TXT))?.permissions();
+                attrs.set_readonly(true);
+                std::fs::set_permissions(root.join(PROXY_TXT), attrs)?;
+                Ok(())
+            },
+            || panic!("start after failed write"),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("Failed to write proxy.txt"));
+        let mut attrs = std::fs::metadata(root.join(PROXY_TXT))
+            .unwrap()
+            .permissions();
+        attrs.set_readonly(false);
+        std::fs::set_permissions(root.join(PROXY_TXT), attrs).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -295,24 +295,50 @@ fn proxy_enabled_by_default() -> bool {
     true
 }
 
-/// 用户可修改的设置
+/// 用户可修改的设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "StoredUserSettings", into = "StoredUserSettings")]
 pub struct UserSettings {
-    /// 是否劫持 UDP 流量（Discord 语音走代理）。默认 false。
-    #[serde(default)]
+    /// 是否代理 Discord UDP 语音流量。新安装和旧版升级默认开启。
     pub proxy_udp: bool,
-
-    /// 用户是否希望代理保持启用。
-    ///
-    /// 旧版设置文件没有这个字段，此时保持原有的自动启动行为。
-    #[serde(default = "proxy_enabled_by_default")]
     pub proxy_enabled: bool,
+}
+
+/// Revision zero predates the UDP-on policy. Once saved, revision one preserves
+/// explicit UDP opt-outs. Decode is read-only, including for legacy files.
+#[derive(Serialize, Deserialize)]
+struct StoredUserSettings {
+    #[serde(default)]
+    udp_policy_revision: u32,
+    #[serde(default = "proxy_enabled_by_default")]
+    proxy_udp: bool,
+    #[serde(default = "proxy_enabled_by_default")]
+    proxy_enabled: bool,
+}
+
+impl From<StoredUserSettings> for UserSettings {
+    fn from(stored: StoredUserSettings) -> Self {
+        Self {
+            proxy_udp: stored.udp_policy_revision == 0 || stored.proxy_udp,
+            proxy_enabled: stored.proxy_enabled,
+        }
+    }
+}
+
+impl From<UserSettings> for StoredUserSettings {
+    fn from(settings: UserSettings) -> Self {
+        Self {
+            udp_policy_revision: 1,
+            proxy_udp: settings.proxy_udp,
+            proxy_enabled: settings.proxy_enabled,
+        }
+    }
 }
 
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
-            proxy_udp: false,
+            proxy_udp: true,
             proxy_enabled: true,
         }
     }
@@ -381,6 +407,40 @@ pub fn find_java() -> Result<PathBuf> {
 #[cfg(test)]
 mod user_settings_tests {
     use super::{UserSettings, load_user_settings, save_user_settings};
+
+    #[test]
+    fn udp_defaults_on_for_new_install_and_missing_field() {
+        let base = tempfile::tempdir().unwrap();
+        assert!(load_user_settings(base.path()).proxy_udp);
+        let decoded: UserSettings = serde_json::from_str("{}").unwrap();
+        assert!(decoded.proxy_udp);
+    }
+
+    #[test]
+    fn legacy_udp_off_migrates_without_enabling_stopped_proxy() {
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join(super::USER_SETTINGS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"proxy_udp":false,"proxy_enabled":false}"#).unwrap();
+        let migrated = load_user_settings(base.path());
+        assert!(migrated.proxy_udp);
+        assert!(!migrated.proxy_enabled);
+        save_user_settings(base.path(), &migrated).unwrap();
+        assert!(load_user_settings(base.path()).proxy_udp);
+    }
+
+    #[test]
+    fn manual_udp_opt_out_survives_new_version_reloads() {
+        let base = tempfile::tempdir().unwrap();
+        let settings = UserSettings { proxy_udp: false, proxy_enabled: false };
+        save_user_settings(base.path(), &settings).unwrap();
+        for _ in 0..2 {
+            let decoded = load_user_settings(base.path());
+            assert!(!decoded.proxy_udp);
+            assert!(!decoded.proxy_enabled);
+            save_user_settings(base.path(), &decoded).unwrap();
+        }
+    }
 
     #[test]
     fn legacy_settings_keep_proxy_enabled() {

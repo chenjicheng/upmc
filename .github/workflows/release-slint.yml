@@ -1,10 +1,11 @@
-# Historical transition; ordinary branch validation uses release-slint.yml.
+# Slint 0.5.0 release. Branch/manual runs never publish.
 # Later native promotion must preserve the two original entry documents.
-name: Build legacy updater
+name: Build Slint updater
 
 on:
   push:
-    tags: ['v0.4.8']
+    tags: ['v0.5.0']
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -37,13 +38,13 @@ jobs:
       - name: Resolve publication boundary
         id: context
         shell: pwsh
-        run: python scripts/legacy_publication.py ci-context >> $env:GITHUB_OUTPUT
+        run: python scripts/release_publication.py ci-context >> $env:GITHUB_OUTPUT
 
       - name: Validate the transition source before building
         if: steps.context.outputs.publish == 'true'
         shell: pwsh
         run: >-
-          python scripts/legacy_publication.py validate-source
+          python scripts/release_publication.py validate-source
           --source . --tag "$env:GITHUB_REF_NAME" --build-id "$env:GITHUB_SHA"
           --ref "$env:GITHUB_REF" --channel stable
 
@@ -55,7 +56,7 @@ jobs:
         with:
           workspaces: . -> target
           cache-on-failure: true
-          shared-key: legacy-048-windows-2022-rust-1.95.0
+          shared-key: slint-050-windows-2022-rust-1.95.0
 
       - name: Build the matching embedded proxy DLL pair
         run: cargo build --locked --release -p discord-proxy-dll -p force-proxy-dll
@@ -87,7 +88,7 @@ jobs:
         if: steps.context.outputs.publish == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: legacy-updater-${{ github.sha }}
+          name: slint-updater-${{ github.sha }}
           path: _artifacts/updater.exe
           if-no-files-found: error
           retention-days: 30
@@ -96,7 +97,7 @@ jobs:
     needs: build
     if: >-
       needs.build.outputs.publish == 'true' && github.event_name == 'push' &&
-      github.ref == 'refs/tags/v0.4.8' && github.repository == 'chenjicheng/upmc'
+      github.ref == 'refs/tags/v0.5.0' && github.repository == 'chenjicheng/upmc'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -130,16 +131,16 @@ jobs:
       - name: Download this run's actual final executable
         uses: actions/download-artifact@v4
         with:
-          name: legacy-updater-${{ github.sha }}
+          name: slint-updater-${{ github.sha }}
           path: _artifacts
 
-      - name: Verify the immutable Release and atomically publish all four descriptors
+      - name: Verify the immutable Release and atomically publish bridge descriptors
         shell: bash
         run: |
           git -C pages config user.name 'github-actions[bot]'
           git -C pages config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           expected_head="$(git -C pages rev-parse HEAD)"
-          python source/scripts/legacy_publication.py publish \
+          python source/scripts/release_publication.py publish \
             --source source --tag "$GITHUB_REF_NAME" --build-id "$GITHUB_SHA" \
             --ref "$GITHUB_REF" --channel stable --artifact _artifacts/updater.exe \
             --pages pages --expected-pages-head "$expected_head"

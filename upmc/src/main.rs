@@ -18,6 +18,8 @@ mod config;
 mod discord_proxy;
 mod fabric;
 mod gui;
+mod gui_state;
+mod gui_switches;
 mod observability;
 mod packwiz;
 mod retry;

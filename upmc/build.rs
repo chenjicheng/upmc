@@ -10,6 +10,11 @@
 // ============================================================
 
 fn main() {
+    slint_build::compile_with_config(
+        "ui/app.slint",
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("compile Slint UI");
     // 只在 Windows 上执行
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
         let mut res = winresource::WindowsResource::new();

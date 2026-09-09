@@ -1,727 +1,918 @@
-// ============================================================
-// gui.rs — 原生 Windows GUI 窗口
-// ============================================================
-// 使用 native-windows-gui (nwg) 创建一个小窗口，包含：
-//   - 状态文本 (显示当前操作)
-//   - 进度条
-//   - "启动 PCL" / "启用 Discord 代理" 按钮
-//
-// 更新逻辑运行在后台线程中，通过 nwg::Notice 机制
-// 线程安全地通知 GUI 更新进度。
-// ============================================================
-
-use native_windows_derive as nwd;
-use native_windows_gui as nwg;
-
-use nwd::NwgUi;
-use nwg::NativeUi;
-
-use std::cell::{Cell, RefCell};
+use crate::{
+    config::{self, ChannelConfig, UpdateChannel},
+    discord_proxy,
+    gui_state::{Job, Outcome, UiState},
+    gui_switches::{Control, SwitchQueue},
+    update::{self, Progress, UpdateResult},
+    version,
+};
+use anyhow::{Context, Result};
+use slint::ComponentHandle;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::thread;
-
-use crate::config::{self, ChannelConfig};
-use crate::discord_proxy;
-use crate::update::{self, Progress, UpdateResult};
-
-/// 更新完成后的结果状态。
-#[derive(Debug, Clone)]
-enum FinishState {
-    /// 更新成功，proxy_running = 代理是否已自动启动
-    Success { proxy_running: bool },
-    /// 更新器已自更新并重启新进程，当前进程仅需退出
-    SelfUpdateRestarting,
-    /// Java 未安装，显示友好安装指引
-    JavaNotFound,
-    /// 更新出错
-    Error(String),
-    /// Discord 代理设置成功
-    ProxySuccess,
-    /// Discord 代理设置失败
-    ProxyError(String),
-    /// Discord 代理已停止
-    ProxyStopped,
-    /// Discord 代理已停止，但状态保存或 DLL 清理失败
-    ProxyStopError(String),
-}
-
-/// 共享的进度状态，后台线程写入，GUI 线程读取。
-#[derive(Debug, Clone, Default)]
-struct SharedState {
-    progress: Progress,
-    log: Vec<String>,
-    finish: Option<FinishState>,
-}
-
-/// RAII guard：后台线程 panic 时自动设置错误状态并通知 GUI，防止窗口挂起。
-struct PanicGuard {
-    state: Arc<Mutex<SharedState>>,
-    sender: nwg::NoticeSender,
-    completed: bool,
-}
-
-impl Drop for PanicGuard {
-    fn drop(&mut self) {
-        if !self.completed {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if s.finish.is_none() {
-                s.log
-                    .push("[错误] 更新器内部错误（线程异常退出）".to_string());
-                s.finish = Some(FinishState::Error(
-                    "更新器内部错误（线程异常退出）".to_string(),
-                ));
-            }
-            drop(s);
-            self.sender.notice();
-        }
-    }
-}
-
-/// GUI 窗口定义
-#[derive(Default, NwgUi)]
-pub struct UpdaterApp {
-    // ── 嵌入资源 ──
-    #[nwg_resource]
-    embed: nwg::EmbedResource,
-
-    #[nwg_resource(source_embed: Some(&data.embed), source_embed_id: 1)]
-    app_icon: nwg::Icon,
-
-    // ── 窗口 ──
-    #[nwg_control(
-        title: "",
-        size: (420, 235),
-        position: (300, 300),
-        flags: "WINDOW|VISIBLE",
-        center: true,
-        icon: Some(&data.app_icon)
-    )]
-    #[nwg_events(OnWindowClose: [UpdaterApp::on_close])]
-    window: nwg::Window,
-
-    // ── 状态文本 ──
-    #[nwg_control(
-        text: "正在初始化...",
-        size: (380, 25),
-        position: (20, 20),
-        flags: "VISIBLE"
-    )]
-    status_label: nwg::Label,
-
-    // ── 进度条 ──
-    #[nwg_control(
-        size: (380, 25),
-        position: (20, 55),
-        range: 0..100,
-        pos: 0
-    )]
-    progress_bar: nwg::ProgressBar,
-
-    // ── 底部提示 ──
-    #[nwg_control(
-        text: "",
-        size: (380, 20),
-        position: (20, 95),
-        flags: "VISIBLE"
-    )]
-    hint_label: nwg::Label,
-
-    // ── 启动 PCL 按钮（初始隐藏） ──
-    #[nwg_control(
-        text: "启动 PCL",
-        size: (380, 35),
-        position: (20, 120)
-    )]
-    #[nwg_events(OnButtonClick: [UpdaterApp::on_launch_pcl])]
-    btn_launch_pcl: nwg::Button,
-
-    // ── 启用 Discord 代理按钮（初始隐藏） ──
-    #[nwg_control(
-        text: "启用代理",
-        size: (185, 35),
-        position: (20, 160)
-    )]
-    #[nwg_events(OnButtonClick: [UpdaterApp::on_enable_discord_proxy])]
-    btn_discord_proxy: nwg::Button,
-
-    // ── 设置按钮（初始隐藏） ──
-    #[nwg_control(
-        text: "设置",
-        size: (185, 35),
-        position: (215, 160)
-    )]
-    #[nwg_events(OnButtonClick: [UpdaterApp::on_settings])]
-    btn_settings: nwg::Button,
-
-    // ── 布局管理器 ──
-    #[nwg_layout(parent: window, spacing: 1, max_row: Some(5), max_column: Some(1))]
-    layout: nwg::GridLayout,
-
-    // ── Notice（后台线程 → GUI） ──
-    #[nwg_control]
-    #[nwg_events(OnNotice: [UpdaterApp::on_progress_update])]
-    progress_notice: nwg::Notice,
-
-    // ── 内部状态 ──
-    shared_state: Arc<Mutex<SharedState>>,
-    base_dir: RefCell<PathBuf>,
-    proxy_running: Cell<bool>,
-}
-
+use std::{
+    cell::{Cell, RefCell},
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::mpsc::{self, SyncSender},
+    time::Duration,
+};
+slint::include_modules!();
+pub struct UpdaterApp;
 impl UpdaterApp {
-    /// 启动更新器 GUI。
-    pub fn run(base_dir: PathBuf, channel_config: ChannelConfig) {
-        nwg::init().expect("初始化 Windows GUI 失败");
-        nwg::Font::set_global_family("Microsoft YaHei UI").expect("设置字体失败");
-
-        let app = UpdaterApp {
-            shared_state: Arc::new(Mutex::new(SharedState {
-                progress: Progress {
-                    percent: 0,
-                    message: "正在初始化...".to_string(),
-                },
-                log: Vec::new(),
-                finish: None,
-            })),
-            base_dir: RefCell::new(base_dir),
-            ..Default::default()
-        };
-
-        let app = UpdaterApp::build_ui(app).expect("构建 UI 失败");
-
-        // 设置窗口标题
-        let title = config::window_title(channel_config.channel);
-        app.window.set_text(&title);
-        app.hint_label.set_text("请勿关闭此窗口...");
-
-        app.btn_launch_pcl.set_visible(false);
-        app.btn_discord_proxy.set_visible(false);
-        app.btn_settings.set_visible(false);
-
-        // 启动后台更新线程
-        let state = Arc::clone(&app.shared_state);
-        let notice_sender = app.progress_notice.sender();
-        let base_dir = app.base_dir.borrow().clone();
-        let channel_config_clone = channel_config;
-
-        thread::spawn(move || {
-            let mut guard = PanicGuard {
-                state: Arc::clone(&state),
-                sender: notice_sender,
-                completed: false,
-            };
-
-            let result =
-                update::run_update(&base_dir, &channel_config_clone, &|progress: Progress| {
-                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                    s.log
-                        .push(format!("[{}%] {}", progress.percent, progress.message));
-                    s.progress = progress;
-                    drop(s);
-                    notice_sender.notice();
-                });
-
-            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-            s.finish = Some(match result {
-                Ok(UpdateResult::SelfUpdateRestarting) => {
-                    s.log.push("[重启] 更新器已更新，正在重启...".to_string());
-                    FinishState::SelfUpdateRestarting
-                }
-                Ok(UpdateResult::Success { proxy_running }) => {
-                    s.log.push("[完成] 更新成功".to_string());
-                    FinishState::Success { proxy_running }
-                }
-                Ok(UpdateResult::Offline) => {
-                    s.log.push("[完成] 离线模式".to_string());
-                    FinishState::Success { proxy_running: false }
-                }
-                Err(e) => {
-                    let err_msg = format!("{e:#}");
-                    s.log.push(format!("[错误] {err_msg}"));
-                    if e.downcast_ref::<config::JavaNotFound>().is_some() {
-                        FinishState::JavaNotFound
-                    } else {
-                        FinishState::Error(err_msg)
-                    }
-                }
-            });
-            drop(s);
-            notice_sender.notice();
-            guard.completed = true;
-        });
-
-        nwg::dispatch_thread_events();
-    }
-
-    /// 后台线程发来进度通知时调用
-    fn on_progress_update(&self) {
-        let (percent, message, finish, log_text) = {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            let percent = state.progress.percent;
-            let message = state.progress.message.clone();
-            let finish = state.finish.take();
-            let log_text = if matches!(
-                finish,
-                Some(
-                    FinishState::Error(_)
-                        | FinishState::ProxyError(_)
-                        | FinishState::ProxyStopError(_)
-                )
-            ) {
-                Some(state.log.join("\r\n"))
-            } else {
-                None
-            };
-            (percent, message, finish, log_text)
-        };
-
-        self.progress_bar.set_pos(percent);
-        self.status_label.set_text(&message);
-
-        let finish = match finish {
-            Some(f) => f,
-            None => return,
-        };
-
-        match finish {
-            FinishState::Success { proxy_running } => {
-                self.proxy_running.set(proxy_running);
-                if proxy_running {
-                    self.show_action_buttons("更新完成，代理已就绪", Some("Xray 已在后台运行"));
-                    self.btn_discord_proxy.set_text("停止代理");
-                } else {
-                    self.show_action_buttons("更新完成", None);
-                    self.btn_discord_proxy.set_text("启用代理");
-                }
-            }
-            FinishState::SelfUpdateRestarting => {
-                nwg::stop_thread_dispatch();
-            }
-            FinishState::JavaNotFound => {
-                self.progress_bar.set_pos(0);
-                self.status_label.set_text("需要安装 Java");
-                self.hint_label.set_text("请安装 Java 后重新运行程序");
-                nwg::modal_info_message(
-                    &self.window,
-                    "需要安装 Java",
-                    &format!(
-                        "未检测到系统 Java 环境。\n\
-                         请安装 Java 后重新运行程序。\n\n\
-                         下载地址（如未自动打开请手动访问）：\n{}",
-                        config::JAVA_DOWNLOAD_URL
-                    ),
-                );
-                nwg::stop_thread_dispatch();
-            }
-            FinishState::Error(ref error_text) => {
-                self.progress_bar.set_pos(0);
-                self.status_label
-                    .set_text(&format!("更新失败: {error_text}"));
-                self.hint_label.set_text("请截图联系管理员");
-                show_error_log_dialog(&self.window, log_text.as_deref().unwrap_or(""));
-                nwg::stop_thread_dispatch();
-            }
-            FinishState::ProxySuccess => {
-                self.proxy_running.set(true);
-                self.show_action_buttons(
-                    "Discord 代理已启用",
-                    Some("Xray 已在后台运行，Discord 已配置代理"),
-                );
-                self.btn_discord_proxy.set_text("停止代理");
-            }
-            FinishState::ProxyStopped => {
-                self.proxy_running.set(false);
-                self.show_action_buttons("代理已停止", None);
-                self.btn_discord_proxy.set_text("启用代理");
-            }
-            FinishState::ProxyStopError(ref error_text) => {
-                self.proxy_running.set(false);
-                self.show_action_buttons("代理停止不完整", Some(error_text));
-                self.btn_discord_proxy.set_text("启用代理");
-                if let Some(log) = log_text.as_deref() {
-                    show_error_log_dialog(&self.window, log);
-                }
-            }
-            FinishState::ProxyError(ref error_text) => {
-                self.proxy_running.set(false);
-                self.progress_bar.set_pos(0);
-                self.status_label
-                    .set_text(&format!("代理设置失败: {error_text}"));
-                self.hint_label.set_text("请检查网络后重试");
-                self.hint_label.set_visible(true);
-                self.btn_launch_pcl.set_visible(true);
-                self.btn_launch_pcl.set_enabled(true);
-                self.btn_discord_proxy.set_visible(true);
-                self.btn_discord_proxy.set_enabled(true);
-                self.btn_settings.set_visible(true);
-                self.btn_settings.set_enabled(true);
-                if let Some(log) = log_text.as_deref() {
-                    show_error_log_dialog(&self.window, log);
-                }
-            }
-        }
-    }
-
-    /// 显示操作按钮，可选设置提示文本。
-    fn show_action_buttons(&self, status: &str, hint: Option<&str>) {
-        self.status_label.set_text(status);
-        self.progress_bar.set_pos(100);
-        if let Some(h) = hint {
-            self.hint_label.set_text(h);
-            self.hint_label.set_visible(true);
-        } else {
-            self.hint_label.set_visible(false);
-        }
-        self.btn_launch_pcl.set_visible(true);
-        self.btn_launch_pcl.set_enabled(true);
-        self.btn_discord_proxy.set_visible(true);
-        self.btn_discord_proxy.set_enabled(true);
-        self.btn_settings.set_visible(true);
-        self.btn_settings.set_enabled(true);
-    }
-
-    /// 「启动 PCL」按钮点击
-    fn on_launch_pcl(&self) {
-        let base_dir = self.base_dir.borrow();
-        let pcl2_path = base_dir.join(config::PCL2_EXE);
-
-        if pcl2_path.exists() {
-            if let Err(e) = std::process::Command::new(&pcl2_path)
-                .current_dir(pcl2_path.parent().unwrap_or(&base_dir))
-                .creation_flags(config::CREATE_NO_WINDOW)
-                .spawn()
-            {
-                nwg::modal_info_message(&self.window, "错误", &format!("启动器启动失败: {e}"));
-                return;
-            }
-        } else {
-            nwg::modal_info_message(
-                &self.window,
-                "错误",
-                &format!("找不到启动器: {}", pcl2_path.display()),
+    pub fn run(base_dir: PathBuf, channel: ChannelConfig) {
+        if let Err(error) = run(base_dir, channel) {
+            crate::observability::event(
+                "startup.fatal",
+                "Slint UI failed",
+                format!("{error:#}"),
+                "GUI",
+                "exit with failure",
+                std::process::id(),
             );
-            return;
+            eprintln!("界面启动失败：{error:#}");
+            std::process::exit(1);
         }
-
-        nwg::stop_thread_dispatch();
-    }
-
-    /// 「启用 Discord 代理」/「停止代理」按钮点击
-    fn on_enable_discord_proxy(&self) {
-        let base_dir = self.base_dir.borrow().clone();
-
-        if self.proxy_running.get() {
-            self.btn_discord_proxy.set_enabled(false);
-            self.status_label.set_text("正在停止代理...");
-
-            let state = Arc::clone(&self.shared_state);
-            let notice_sender = self.progress_notice.sender();
-
-            thread::spawn(move || {
-                let mut guard = PanicGuard {
-                    state: Arc::clone(&state),
-                    sender: notice_sender,
-                    completed: false,
-                };
-
-                let result = discord_proxy::stop(&base_dir);
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.finish = Some(match result {
-                    Ok(()) => FinishState::ProxyStopped,
-                    Err(e) => {
-                        let msg = format!("{e:#}");
-                        s.log.push(format!("[代理][停止错误] {msg}"));
-                        FinishState::ProxyStopError(msg)
-                    }
-                });
-                drop(s);
-                notice_sender.notice();
-                guard.completed = true;
-            });
-            return;
-        }
-
-        self.btn_launch_pcl.set_visible(false);
-        self.btn_discord_proxy.set_visible(false);
-        self.btn_settings.set_visible(false);
-        self.hint_label.set_visible(false);
-        self.progress_bar.set_pos(0);
-        self.status_label.set_text("正在设置 Discord 代理...");
-
-        {
-            let mut s = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            s.log.clear();
-            s.finish = None;
-        }
-
-        let state = Arc::clone(&self.shared_state);
-        let notice_sender = self.progress_notice.sender();
-
-        thread::spawn(move || {
-            let mut guard = PanicGuard {
-                state: Arc::clone(&state),
-                sender: notice_sender,
-                completed: false,
-            };
-
-            let result = discord_proxy::setup(&base_dir, &|progress: Progress| {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.log
-                    .push(format!("[代理][{}%] {}", progress.percent, progress.message));
-                s.progress = progress;
-                drop(s);
-                notice_sender.notice();
-            });
-
-            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-            s.finish = Some(match result {
-                Ok(()) => FinishState::ProxySuccess,
-                Err(e) => {
-                    let msg = format!("{e:#}");
-                    s.log.push(format!("[代理][错误] {msg}"));
-                    FinishState::ProxyError(msg)
-                }
-            });
-            drop(s);
-            notice_sender.notice();
-            guard.completed = true;
-        });
-    }
-
-    /// 「设置」按钮点击
-    fn on_settings(&self) {
-        let base_dir = self.base_dir.borrow().clone();
-        show_settings_dialog(&self.window, &base_dir);
-    }
-
-    /// 窗口关闭事件
-    fn on_close(&self) {
-        nwg::stop_thread_dispatch();
     }
 }
 
-/// 弹出一个包含可复制日志文本的错误窗口。
-fn show_error_log_dialog(parent: &nwg::Window, log_text: &str) {
-    let mut window = Default::default();
-    nwg::Window::builder()
-        .title("错误日志")
-        .size((620, 460))
-        .position((200, 200))
-        .center(true)
-        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-        .parent(Some(parent))
-        .build(&mut window)
-        .expect("创建错误日志窗口失败");
-
-    let mut label = Default::default();
-    nwg::Label::builder()
-        .text("以下是完整日志（可全选复制）：")
-        .size((560, 22))
-        .position((20, 10))
-        .parent(&window)
-        .build(&mut label)
-        .expect("创建标签失败");
-
-    let mut text_box = Default::default();
-    nwg::TextBox::builder()
-        .text(log_text)
-        .size((580, 330))
-        .position((20, 38))
-        .flags(
-            nwg::TextBoxFlags::VISIBLE
-                | nwg::TextBoxFlags::VSCROLL
-                | nwg::TextBoxFlags::AUTOVSCROLL
-                | nwg::TextBoxFlags::TAB_STOP,
-        )
-        .readonly(true)
-        .parent(&window)
-        .build(&mut text_box)
-        .expect("创建文本框失败");
-
-    if let Some(hwnd) = text_box.handle.hwnd() {
-        use winapi::um::winuser::{EM_SCROLLCARET, EM_SETSEL, SendMessageW};
-        unsafe {
-            let end = -1isize;
-            SendMessageW(hwnd, EM_SETSEL as u32, end as usize, end);
-            SendMessageW(hwnd, EM_SCROLLCARET as u32, 0, 0);
-        }
-    }
-
-    let mut copy_btn = Default::default();
-    nwg::Button::builder()
-        .text("复制日志")
-        .size((100, 32))
-        .position((380, 380))
-        .parent(&window)
-        .build(&mut copy_btn)
-        .expect("创建按钮失败");
-
-    let mut close_btn = Default::default();
-    nwg::Button::builder()
-        .text("关闭")
-        .size((100, 32))
-        .position((500, 380))
-        .parent(&window)
-        .build(&mut close_btn)
-        .expect("创建按钮失败");
-
-    let log_for_copy = log_text.to_string();
-
-    let window_handle_clone = window.handle;
-    let copy_btn_handle = copy_btn.handle;
-    let close_btn_handle = close_btn.handle;
-
-    let handler = nwg::full_bind_event_handler(
-        &window_handle_clone,
-        move |evt, _evt_data, handle| match evt {
-            nwg::Event::OnButtonClick => {
-                if handle == copy_btn_handle {
-                    nwg::Clipboard::set_data_text(window_handle_clone, &log_for_copy);
-                    let _ =
-                        nwg::modal_info_message(window_handle_clone, "提示", "日志已复制到剪贴板");
-                } else if handle == close_btn_handle {
-                    nwg::stop_thread_dispatch();
-                }
-            }
-            nwg::Event::OnWindowClose => {
-                if handle == window_handle_clone {
-                    nwg::stop_thread_dispatch();
-                }
-            }
-            _ => {}
-        },
+fn render(ui: &App, state: &UiState) {
+    render_at(
+        ui,
+        state,
+        state
+            .started
+            .map_or(Duration::ZERO, |start| start.elapsed()),
     );
-
-    nwg::dispatch_thread_events();
-    nwg::unbind_event_handler(&handler);
+}
+fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
+    let busy = state.busy.is_some();
+    ui.set_busy(busy);
+    let main_job = matches!(state.busy, Some(Job::Update | Job::Launch));
+    ui.set_switches_enabled(!main_job && !state.exit);
+    let main_busy = main_job && elapsed >= Duration::from_millis(300);
+    ui.set_main_busy(main_busy);
+    ui.set_updating(main_busy && state.busy == Some(Job::Update));
+    ui.set_launchable(state.ready && !busy);
+    ui.set_proxy_on(state.proxy);
+    ui.set_proxy_text(
+        if state.proxy {
+            "已启用"
+        } else {
+            "未启用"
+        }
+        .into(),
+    );
+    ui.set_status(if main_job && !main_busy {
+        if state.previous_status.is_empty() {
+            "准备整合包".into()
+        } else {
+            state.previous_status.clone().into()
+        }
+    } else {
+        state.status.clone().into()
+    });
+    let main_error = matches!(state.error_job(), Some(Job::Update | Job::Launch));
+    ui.set_proxy_error(matches!(
+        state.error_job(),
+        Some(Job::ProxyStart | Job::ProxyStop)
+    ));
+    ui.set_settings_error(if state.error_job() == Some(Job::Settings) {
+        state.error.clone().into()
+    } else {
+        "".into()
+    });
+    ui.set_scenario(if main_error { 5 } else { 0 });
+    ui.set_detail(
+        if main_busy {
+            state.progress_detail.clone()
+        } else {
+            String::new()
+        }
+        .into(),
+    );
+    ui.set_has_error(main_error);
+    ui.set_progress(state.percent.min(100) as i32);
+    ui.set_action_text(
+        if main_busy {
+            "请稍候…"
+        } else if state.ready
+            || (main_job && (state.previous_ready || state.previous_status.is_empty()))
+        {
+            "启动 PCL"
+        } else {
+            "重试更新"
+        }
+        .into(),
+    );
 }
 
-/// 设置窗口：更新通道 + UDP 代理开关。
-fn show_settings_dialog(parent: &nwg::Window, base_dir: &std::path::Path) {
-    use crate::config::{
-        ChannelConfig, UpdateChannel, UserSettings,
-        load_user_settings, save_channel_config, save_user_settings,
-    };
+fn save_udp(base: &Path, enabled: bool) -> Result<()> {
+    let mut settings = config::load_user_settings(base);
+    settings.proxy_udp = enabled;
+    config::save_user_settings(base, &settings).context("保存 UDP 设置失败")
+}
 
-    let channel_cfg_path = base_dir.join(config::CHANNEL_CONFIG_FILE);
-    let current_channel = std::fs::read_to_string(&channel_cfg_path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<ChannelConfig>(&s).ok())
-        .unwrap_or_default()
-        .channel;
-    let current_settings = load_user_settings(base_dir);
+enum Request {
+    Update,
+    Proxy(bool),
+    Udp(bool),
+    Channel(UpdateChannel),
+    Launch,
+}
+impl Request {
+    fn job(&self) -> Job {
+        match self {
+            Self::Update => Job::Update,
+            Self::Proxy(true) => Job::ProxyStart,
+            Self::Proxy(false) => Job::ProxyStop,
+            Self::Udp(_) | Self::Channel(_) => Job::Settings,
+            Self::Launch => Job::Launch,
+        }
+    }
+}
+enum Event {
+    Progress(Progress),
+    Finished(Outcome),
+}
+type Executor = fn(&Path, &ChannelConfig, Request, &dyn Fn(Progress)) -> Result<Outcome>;
+struct Controller {
+    ui: slint::Weak<App>,
+    base: PathBuf,
+    channel: RefCell<ChannelConfig>,
+    udp: Cell<bool>,
+    state: RefCell<UiState>,
+    log: RefCell<Vec<String>>,
+    switches: RefCell<SwitchQueue>,
+    errors: RefCell<Vec<String>>,
+    error_window: RefCell<Option<slint::Weak<LogWindow>>>,
+    sender: SyncSender<Event>,
+    executor: Executor,
+}
+const BUSY_CLOSE_FEEDBACK: &str = "任务进行中，请等待完成后关闭。";
 
-    let mut window = Default::default();
-    nwg::Window::builder()
-        .title("设置")
-        .size((340, 190))
-        .center(true)
-        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-        .parent(Some(parent))
-        .build(&mut window)
-        .expect("创建设置窗口失败");
-
-    // 更新通道
-    let mut channel_label = Default::default();
-    nwg::Label::builder()
-        .text("更新通道:")
-        .size((80, 22))
-        .position((20, 22))
-        .parent(&window)
-        .build(&mut channel_label)
-        .expect("label");
-
-    let mut channel_combo = Default::default();
-    nwg::ComboBox::builder()
-        .size((170, 25))
-        .position((105, 20))
-        .collection(vec!["stable".to_string(), "dev".to_string()])
-        .selected_index(Some(if current_channel == UpdateChannel::Dev { 1 } else { 0 }))
-        .parent(&window)
-        .build(&mut channel_combo)
-        .expect("combo");
-
-    // UDP 开关
-    let mut udp_check = Default::default();
-    nwg::CheckBox::builder()
-        .text("代理 UDP 流量（Discord 语音走代理）")
-        .size((300, 25))
-        .position((20, 65))
-        .check_state(if current_settings.proxy_udp {
-            nwg::CheckBoxState::Checked
-        } else {
-            nwg::CheckBoxState::Unchecked
-        })
-        .parent(&window)
-        .build(&mut udp_check)
-        .expect("checkbox");
-
-    // 保存按钮
-    let mut save_btn = Default::default();
-    nwg::Button::builder()
-        .text("保存")
-        .size((100, 35))
-        .position((80, 110))
-        .parent(&window)
-        .build(&mut save_btn)
-        .expect("button");
-
-    // 取消按钮
-    let mut cancel_btn = Default::default();
-    nwg::Button::builder()
-        .text("取消")
-        .size((100, 35))
-        .position((200, 110))
-        .parent(&window)
-        .build(&mut cancel_btn)
-        .expect("button");
-
-    let win_handle = window.handle;
-    let save_handle = save_btn.handle;
-    let cancel_handle = cancel_btn.handle;
-    let base_dir = base_dir.to_path_buf();
-
-    // 用 RefCell 包装控件以便在闭包中读取值
-    let channel_combo = std::cell::RefCell::new(channel_combo);
-    let udp_check = std::cell::RefCell::new(udp_check);
-
-    let handler = nwg::full_bind_event_handler(&win_handle, move |evt, _, handle| match evt {
-        nwg::Event::OnButtonClick => {
-            if handle == save_handle {
-                let channel = if channel_combo.borrow().selection() == Some(1) {
+impl Controller {
+    fn submit_switch(&self, control: Control, enabled: bool) {
+        if matches!(self.state.borrow().busy, Some(Job::Update | Job::Launch))
+            || self.state.borrow().exit
+        {
+            return;
+        }
+        self.switches.borrow_mut().request(control, enabled);
+        self.repaint();
+        self.start_queued();
+    }
+    fn start_queued(&self) {
+        if self.state.borrow().busy.is_some() || self.state.borrow().exit {
+            return;
+        }
+        let next = self.switches.borrow_mut().take_next();
+        if let Some(change) = next {
+            self.start(match change.control {
+                Control::Proxy => Request::Proxy(change.enabled),
+                Control::Udp => Request::Udp(change.enabled),
+                Control::Channel => Request::Channel(if change.enabled {
                     UpdateChannel::Dev
                 } else {
                     UpdateChannel::Stable
+                }),
+            });
+        }
+    }
+    fn paint_switches(&self, ui: &App) {
+        let switches = self.switches.borrow();
+        let proxy = switches.value(Control::Proxy, self.state.borrow().proxy);
+        ui.set_proxy_on(proxy);
+        ui.set_proxy_text(if proxy { "已启用" } else { "未启用" }.into());
+        ui.set_udp_enabled(switches.value(Control::Udp, self.udp.get()));
+        ui.set_dev_channel(switches.value(
+            Control::Channel,
+            self.channel.borrow().channel == UpdateChannel::Dev,
+        ));
+    }
+    fn record_error(&self, error: String) {
+        let recent_steps = self.log.borrow().join("\n");
+        let context = match self.state.borrow().busy {
+            Some(Job::Update) => "更新整合包",
+            Some(Job::ProxyStart) => "启用 Discord 代理",
+            Some(Job::ProxyStop) => "停用 Discord 代理",
+            Some(Job::Settings) => "保存设置",
+            Some(Job::Launch) => "启动 PCL",
+            None => "界面操作",
+        };
+        let text = {
+            let mut errors = self.errors.borrow_mut();
+            let number = errors.len() + 1;
+            let mut record = format!("[{number}] {context}\n{error}");
+            if !recent_steps.is_empty() {
+                record.push_str(&format!("\n\n执行记录：\n{recent_steps}"));
+            }
+            errors.push(record);
+            errors.join("\n\n────────────────────────\n\n")
+        };
+        if let Some(window) = self
+            .error_window
+            .borrow()
+            .as_ref()
+            .and_then(slint::Weak::upgrade)
+            && window.get_heading() == "错误详情"
+        {
+            window.set_log_text(text.into());
+        }
+    }
+    fn repaint(&self) {
+        if let Some(ui) = self.ui.upgrade() {
+            render(&ui, &self.state.borrow());
+            self.paint_switches(&ui);
+        }
+    }
+    fn refresh(&self) {
+        if let Some(ui) = self.ui.upgrade() {
+            if self.state.borrow().busy.is_none() && ui.get_feedback() == BUSY_CLOSE_FEEDBACK {
+                ui.set_feedback("".into());
+            }
+            render(&ui, &self.state.borrow());
+            let local = version::read_local_version(&self.base);
+            ui.set_pack_metadata(if local.mc_version.is_empty() {
+                "尚未安装整合包".into()
+            } else {
+                format!(
+                    "Minecraft {} · Fabric {}",
+                    local.mc_version, local.fabric_version
+                )
+                .into()
+            });
+            ui.set_udp_enabled(self.udp.get());
+            ui.set_dev_channel(self.channel.borrow().channel == UpdateChannel::Dev);
+            ui.set_window_title(config::window_title(self.channel.borrow().channel).into());
+            self.paint_switches(&ui);
+        }
+    }
+    fn start(&self, request: Request) {
+        if !self.state.borrow_mut().begin(request.job()) {
+            return;
+        }
+        self.log.borrow_mut().clear();
+        self.repaint();
+        let base = self.base.clone();
+        let channel = self.channel.borrow().clone();
+        let sender = self.sender.clone();
+        let executor = self.executor;
+        let spawn = std::thread::Builder::new()
+            .name("upmc-worker".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    executor(&base, &channel, request, &|p| {
+                        let _ = sender.send(Event::Progress(p));
+                    })
+                }));
+                let outcome = match result {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => Outcome::Failed(format!("{error:#}")),
+                    Err(_) => Outcome::Failed("后台任务异常退出，请查看日志后重试".into()),
                 };
-                let _ = save_channel_config(&base_dir, &ChannelConfig { channel });
-
-                let udp = channel_combo.borrow(); // just to keep the borrow checker happy
-                drop(udp);
-                let udp = udp_check.borrow().check_state() == nwg::CheckBoxState::Checked;
-                let _ = save_user_settings(
-                    &base_dir,
-                    &UserSettings {
-                        proxy_udp: udp,
-                        proxy_enabled: current_settings.proxy_enabled,
-                    },
-                );
-
-                nwg::modal_info_message(win_handle, "提示", "设置已保存，下次启动时生效");
-                nwg::stop_thread_dispatch();
-            } else if handle == cancel_handle {
-                nwg::stop_thread_dispatch();
+                let _ = sender.send(Event::Finished(outcome));
+            });
+        if let Err(error) = spawn {
+            self.record_error(format!("无法启动后台任务：{error}"));
+            self.state
+                .borrow_mut()
+                .fail_before_start(format!("无法启动后台任务：{error}"));
+            self.switches.borrow_mut().complete(false);
+            self.start_queued();
+            self.refresh();
+        }
+    }
+    fn event(&self, event: Event) {
+        match event {
+            Event::Progress(p) => {
+                let mut state = self.state.borrow_mut();
+                state.percent = p.percent.min(100);
+                self.append_log(format!("[{}%] {}", state.percent, p.message));
+                state.progress_detail = p.message;
+                drop(state);
+                self.repaint();
+            }
+            Event::Finished(outcome) => {
+                if matches!(outcome, Outcome::Saved)
+                    && let Some(change) = self.switches.borrow().active()
+                {
+                    match change.control {
+                        Control::Channel => {
+                            self.channel.borrow_mut().channel = if change.enabled {
+                                UpdateChannel::Dev
+                            } else {
+                                UpdateChannel::Stable
+                            }
+                        }
+                        Control::Udp => self.udp.set(change.enabled),
+                        Control::Proxy => {}
+                    }
+                }
+                if let Outcome::Failed(error) = &outcome {
+                    self.record_error(error.clone());
+                }
+                let success = !matches!(outcome, Outcome::Failed(_));
+                self.state.borrow_mut().finish(outcome);
+                self.switches.borrow_mut().complete(success);
+                self.start_queued();
+                self.refresh();
+                if self.state.borrow().exit {
+                    let _ = slint::quit_event_loop();
+                }
             }
         }
-        nwg::Event::OnWindowClose => {
-            if handle == win_handle {
-                nwg::stop_thread_dispatch();
-            }
+    }
+    fn append_log(&self, line: String) {
+        let mut log = self.log.borrow_mut();
+        if log.len() >= 500 {
+            log.remove(0);
         }
-        _ => {}
+        log.push(line);
+    }
+    fn request_close(&self) -> bool {
+        if self.state.borrow().busy.is_some() {
+            if let Some(ui) = self.ui.upgrade() {
+                ui.set_feedback(BUSY_CLOSE_FEEDBACK.into());
+            }
+            false
+        } else {
+            true
+        }
+    }
+}
+fn execute(
+    base: &Path,
+    channel: &ChannelConfig,
+    request: Request,
+    progress: &dyn Fn(Progress),
+) -> Result<Outcome> {
+    Ok(match request {
+        Request::Update => match update::run_update(base, channel, progress)? {
+            UpdateResult::Success { proxy_running } => Outcome::Updated(proxy_running),
+            UpdateResult::Offline => Outcome::Offline,
+            UpdateResult::SelfUpdateRestarting => Outcome::Restarting,
+        },
+        Request::Proxy(true) => {
+            discord_proxy::setup(base, progress)?;
+            Outcome::ProxyStarted
+        }
+        Request::Proxy(false) => {
+            discord_proxy::stop(base)?;
+            Outcome::ProxyStopped
+        }
+        Request::Udp(value) => {
+            save_udp(base, value)?;
+            Outcome::Saved
+        }
+        Request::Channel(value) => {
+            config::save_channel_config(base, &ChannelConfig { channel: value })?;
+            Outcome::Saved
+        }
+        Request::Launch => {
+            let launcher = base.join(config::PCL2_EXE);
+            anyhow::ensure!(launcher.is_file(), "找不到启动器：{}", launcher.display());
+            std::process::Command::new(launcher)
+                .current_dir(base)
+                .creation_flags(config::CREATE_NO_WINDOW)
+                .spawn()
+                .context("启动 PCL 失败")?;
+            Outcome::Launched
+        }
+    })
+}
+fn run(base: PathBuf, channel: ChannelConfig) -> Result<()> {
+    run_with_executor(base, channel, execute)
+}
+fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) -> Result<()> {
+    use slint::winit_030::{
+        WinitWindowAccessor,
+        winit::platform::windows::{CornerPreference, WindowAttributesExtWindows},
+    };
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .with_winit_window_attributes_hook(|a| a.with_corner_preference(CornerPreference::Round))
+        .select()?;
+    let ui = App::new()?;
+    ui.set_window_title(config::window_title(channel.channel).into());
+    ui.set_pack_name(config::INSTALL_DIR_NAME.into());
+    ui.set_app_version(env!("CARGO_PKG_VERSION").into());
+    let (sender, receiver) = mpsc::sync_channel(64);
+    let initial_udp = config::load_user_settings(&base).proxy_udp;
+    let controller = Rc::new(Controller {
+        ui: ui.as_weak(),
+        base,
+        channel: RefCell::new(channel),
+        udp: Cell::new(initial_udp),
+        state: RefCell::new(UiState::default()),
+        log: RefCell::new(Vec::new()),
+        switches: RefCell::new(SwitchQueue::default()),
+        errors: RefCell::new(Vec::new()),
+        error_window: RefCell::new(None),
+        sender,
+        executor,
     });
+    controller.refresh();
+    let c = controller.clone();
+    ui.on_primary_action(move || {
+        let ready = c.state.borrow().ready;
+        c.start(if ready {
+            Request::Launch
+        } else {
+            Request::Update
+        });
+    });
+    let c = controller.clone();
+    ui.on_check_update(move || c.start(Request::Update));
+    let c = controller.clone();
+    ui.on_proxy_toggle(move || {
+        let enable = !c
+            .switches
+            .borrow()
+            .value(Control::Proxy, c.state.borrow().proxy);
+        c.submit_switch(Control::Proxy, enable);
+    });
+    let c = controller.clone();
+    ui.on_udp_change(move |value| c.submit_switch(Control::Udp, value));
+    let c = controller.clone();
+    ui.on_channel_change(move |value| {
+        c.submit_switch(Control::Channel, value);
+    });
+    let c = controller.clone();
+    ui.on_close_window(move || {
+        if c.request_close() {
+            let _ = slint::quit_event_loop();
+        }
+    });
+    let c = controller.clone();
+    ui.window().on_close_requested(move || {
+        if c.request_close() {
+            slint::CloseRequestResponse::HideWindow
+        } else {
+            slint::CloseRequestResponse::KeepWindowShown
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_minimize_window(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.window().set_minimized(true);
+        }
+    });
+    let c = controller.clone();
+    ui.on_drag_window(move || {
+        if let Some(ui) = c.ui.upgrade() {
+            match ui.window().with_winit_window(|w| w.drag_window()) {
+                Some(Ok(())) => {}
+                other => {
+                    c.record_error(format!("窗口拖动失败：{other:?}"));
+                    ui.set_feedback("窗口操作失败".into());
+                    ui.set_has_error(true);
+                }
+            }
+        }
+    });
+    let logs = LogWindow::new()?;
+    *controller.error_window.borrow_mut() = Some(logs.as_weak());
+    let c = controller.clone();
+    let weak_logs = logs.as_weak();
+    ui.on_show_logs(move || {
+        if let Some(logs) = weak_logs.upgrade() {
+            logs.set_heading("错误详情".into());
+            logs.set_log_text(
+                c.errors
+                    .borrow()
+                    .join("\n\n────────────────────────\n\n")
+                    .into(),
+            );
+            if let Err(error) = logs.show() {
+                c.record_error(format!("打开错误详情失败：{error}"));
+                if let Some(ui) = c.ui.upgrade() {
+                    ui.set_feedback("无法打开错误详情".into());
+                }
+            }
+        }
+    });
+    let timer = slint::Timer::default();
+    let weak_logs = logs.as_weak();
+    let c = controller.clone();
+    ui.on_show_licenses(move || {
+        if let Some(logs) = weak_logs.upgrade() {
+            logs.set_heading("开源许可".into());
+            logs.set_log_text(include_str!("../assets/third-party-notices.txt").into());
+            if let Err(error) = logs.show() {
+                c.record_error(format!("打开开源许可失败：{error}"));
+                if let Some(ui) = c.ui.upgrade() {
+                    ui.set_feedback("无法打开开源许可".into());
+                    ui.set_has_error(true);
+                }
+            }
+        }
+    });
+    let c = controller.clone();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(60),
+        move || {
+            for event in receiver.try_iter().take(128) {
+                c.event(event);
+            }
+            if c.state.borrow().busy.is_some() {
+                c.repaint();
+            }
+        },
+    );
+    controller.start(Request::Update);
+    ui.run()?;
+    Ok(())
+}
 
-    nwg::dispatch_thread_events();
-    nwg::unbind_event_handler(&handler);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gui_state::{Job, Outcome};
+    #[test]
+    fn close_warning_ends_with_job_but_unrelated_feedback_remains() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, _) = mpsc::sync_channel(64);
+        let c = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(true),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: |_, _, _, _| Ok(Outcome::Saved),
+        };
+        c.state.borrow_mut().begin(Job::Settings);
+        assert!(!c.request_close());
+        assert!(!ui.get_feedback().is_empty());
+        c.refresh();
+        assert!(!ui.get_feedback().is_empty());
+        c.event(Event::Finished(Outcome::Saved));
+        assert!(ui.get_feedback().is_empty());
+        assert!(c.request_close());
+        ui.set_feedback("窗口操作失败".into());
+        c.refresh();
+        assert_eq!(ui.get_feedback(), "窗口操作失败");
+    }
+    #[test]
+    fn acknowledged_channel_choice_is_applied_without_a_second_storage_read() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let c = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(false),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: |_, _, _, _| Ok(Outcome::Saved),
+        };
+        c.submit_switch(Control::Channel, true);
+        assert!(ui.get_dev_channel());
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(ui.get_dev_channel());
+        assert_eq!(c.channel.borrow().channel, UpdateChannel::Dev);
+        assert_eq!(
+            ui.get_window_title(),
+            config::window_title(UpdateChannel::Dev)
+        );
+        config::save_channel_config(
+            temp.path(),
+            &ChannelConfig {
+                channel: UpdateChannel::Stable,
+            },
+        )
+        .unwrap();
+        c.submit_switch(Control::Udp, true);
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert_eq!(
+            c.channel.borrow().channel,
+            UpdateChannel::Dev,
+            "UDP acknowledgement cannot reload a stale channel file"
+        );
+        assert!(ui.get_dev_channel());
+    }
+    #[test]
+    fn repeated_switch_clicks_apply_latest_intent_without_duplicate_backend_work() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(64);
+        fn fixture(
+            base: &Path,
+            _: &ChannelConfig,
+            request: Request,
+            _: &dyn Fn(Progress),
+        ) -> Result<Outcome> {
+            use std::io::Write;
+            let Request::Proxy(value) = request else {
+                anyhow::bail!("unexpected request")
+            };
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(base.join("calls"))?;
+            write!(file, "{value};")?;
+            Ok(if value {
+                Outcome::ProxyStarted
+            } else {
+                Outcome::ProxyStopped
+            })
+        }
+        let c = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(true),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: fixture,
+        };
+        c.submit_switch(Control::Proxy, true);
+        assert!(ui.get_proxy_on());
+        c.submit_switch(Control::Proxy, false);
+        assert!(!ui.get_proxy_on());
+        c.submit_switch(Control::Proxy, true);
+        assert!(ui.get_proxy_on());
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("calls")).unwrap(),
+            "true;"
+        );
+        c.submit_switch(Control::Proxy, false);
+        c.submit_switch(Control::Proxy, true);
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(
+            ui.get_proxy_on(),
+            "old stop completion must not overwrite newer on intent"
+        );
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(ui.get_proxy_on());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("calls")).unwrap(),
+            "true;false;true;"
+        );
+    }
+    #[test]
+    fn short_busy_hints_are_not_shown_but_long_updates_are_visible() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let mut state = UiState::default();
+        state.begin(Job::Update);
+        state.finish(Outcome::Updated(false));
+        state.begin(Job::Update);
+        render_at(&ui, &state, Duration::from_millis(299));
+        assert!(!ui.get_main_busy());
+        assert_eq!(ui.get_status(), "一切就绪");
+        assert_eq!(ui.get_action_text(), "启动 PCL");
+        render_at(&ui, &state, Duration::from_millis(300));
+        assert!(ui.get_main_busy() && ui.get_updating());
+        assert_eq!(ui.get_action_text(), "请稍候…");
+        state.finish(Outcome::Failed("explicit failure".into()));
+        render_at(&ui, &state, Duration::ZERO);
+        assert!(ui.get_has_error());
+    }
+    #[test]
+    #[ignore = "interactive Windows smoke; backend effects isolated to temporary fixture"]
+    fn desktop_window_smoke() {
+        let temp = tempfile::tempdir().unwrap();
+        version::save_local_version(
+            temp.path(),
+            &version::LocalVersion {
+                mc_version: "1.21.11".into(),
+                fabric_version: "0.18.4".into(),
+                version_tag: "smoke".into(),
+            },
+        )
+        .unwrap();
+        fn fixture(
+            base: &Path,
+            channel: &ChannelConfig,
+            request: Request,
+            progress: &dyn Fn(Progress),
+        ) -> Result<Outcome> {
+            match request {
+                Request::Update => {
+                    progress(Progress::new(50, "隔离测试：验证后台进度"));
+                    std::thread::sleep(Duration::from_millis(300));
+                    Ok(Outcome::Updated(false))
+                }
+                Request::Proxy(value) => {
+                    std::thread::sleep(Duration::from_millis(800));
+                    let attempted = base.join("proxy-attempted");
+                    if value && !attempted.exists() {
+                        std::fs::write(attempted, "fixture")?;
+                        anyhow::bail!(
+                            "隔离测试：代理启动失败；订阅服务器返回 HTTP 503。可重试，未修改真实 Discord。"
+                        );
+                    }
+                    Ok(if value {
+                        Outcome::ProxyStarted
+                    } else {
+                        Outcome::ProxyStopped
+                    })
+                }
+                Request::Launch => anyhow::bail!("隔离测试：启动失败时保留窗口和错误详情"),
+                other => execute(base, channel, other, progress),
+            }
+        }
+        run_with_executor(temp.path().to_owned(), ChannelConfig::default(), fixture).unwrap();
+    }
+    #[test]
+    fn persisted_udp_preserves_proxy_opt_out_and_reports_write_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        config::save_user_settings(
+            temp.path(),
+            &config::UserSettings {
+                proxy_udp: true,
+                proxy_enabled: false,
+            },
+        )
+        .unwrap();
+        save_udp(temp.path(), false).unwrap();
+        let settings = config::load_user_settings(temp.path());
+        assert!(!settings.proxy_udp && !settings.proxy_enabled);
+        let blocked = temp.path().join("blocked");
+        std::fs::write(&blocked, "file").unwrap();
+        assert!(save_udp(&blocked, true).is_err());
+    }
+    #[test]
+    fn native_view_reflects_real_update_failure_and_ready_states() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(400.0, 420.0));
+        let mut state = UiState::default();
+        state.begin(Job::Update);
+        render_at(&ui, &state, Duration::from_millis(300));
+        assert!(!ui.get_launchable());
+        let clicks = Rc::new(std::cell::Cell::new(0));
+        let count = clicks.clone();
+        ui.on_primary_action(move || count.set(count.get() + 1));
+        let find = |label: &str| {
+            i_slint_backend_testing::ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap()
+        };
+        find("请稍候…").invoke_accessible_default_action();
+        assert_eq!(
+            clicks.get(),
+            0,
+            "busy actions must ignore accessibility activation"
+        );
+        let update_position = find("检查更新").absolute_position();
+        state.finish(Outcome::Failed("SHA256 mismatch".into()));
+        render(&ui, &state);
+        assert_eq!(
+            find("检查更新").absolute_position(),
+            update_position,
+            "failure details must not move the existing action"
+        );
+        assert_eq!(ui.get_action_text(), "重试更新");
+        assert!(
+            ui.get_detail().is_empty(),
+            "failure reasons belong only in the shared error window"
+        );
+        state.begin(Job::Update);
+        state.finish(Outcome::Updated(true));
+        render(&ui, &state);
+        assert!(ui.get_launchable() && ui.get_proxy_on());
+        assert_eq!(ui.get_action_text(), "启动 PCL");
+        let launch_position = find("启动 PCL").absolute_position();
+        let proxy_position = find("Discord 代理开关").absolute_position();
+        state.begin(Job::ProxyStart);
+        render(&ui, &state);
+        assert_eq!(
+            ui.get_action_text(),
+            "启动 PCL",
+            "proxy activity must not flash the primary action label"
+        );
+        assert!(!ui.get_updating());
+        assert_eq!(
+            ui.get_proxy_text(),
+            "已启用",
+            "switch displays intent without a connecting intermediate state"
+        );
+        assert_eq!(find("启动 PCL").absolute_position(), launch_position);
+        assert_eq!(find("Discord 代理开关").absolute_position(), proxy_position);
+        state.finish(Outcome::ProxyStarted);
+        render(&ui, &state);
+        let check_position = find("检查更新").absolute_position();
+        state.begin(Job::ProxyStop);
+        state.finish(Outcome::ProxyStopped);
+        state.begin(Job::ProxyStart);
+        state.finish(Outcome::Failed("HTTP 503: subscription unavailable".into()));
+        render(&ui, &state);
+        assert!(ui.get_proxy_error());
+        assert!(
+            !ui.get_has_error(),
+            "proxy errors must not insert a primary-area error action"
+        );
+        assert!(
+            ui.get_detail().is_empty(),
+            "proxy errors stay beside the proxy switch"
+        );
+        assert_eq!(find("检查更新").absolute_position(), check_position);
+        find("代理错误详情");
+        state.begin(Job::Update);
+        state.finish(Outcome::Updated(true));
+        render(&ui, &state);
+        find("启动 PCL").invoke_accessible_default_action();
+        assert_eq!(clicks.get(), 1);
+        find("设置").invoke_accessible_default_action();
+        let udp_changes = Rc::new(std::cell::Cell::new(0));
+        let count = udp_changes.clone();
+        ui.on_udp_change(move |_| count.set(count.get() + 1));
+        find("UDP 流量开关").invoke_accessible_default_action();
+        assert_eq!(udp_changes.get(), 1);
+        ui.set_switches_enabled(false);
+        find("UDP 流量开关").invoke_accessible_default_action();
+        assert_eq!(udp_changes.get(), 1);
+        find("关于").invoke_accessible_default_action();
+        assert!(
+            i_slint_backend_testing::ElementHandle::find_by_accessible_label(&ui, "#MadeWithSlint")
+                .next()
+                .is_some()
+        );
+        find("开源许可");
+        let temp = tempfile::tempdir().unwrap();
+        config::save_user_settings(
+            temp.path(),
+            &config::UserSettings {
+                proxy_udp: true,
+                proxy_enabled: false,
+            },
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let controller = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(true),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: |_, _, _, _| anyhow::bail!("fixture: settings write rejected"),
+        };
+        ui.set_udp_enabled(true);
+        controller.submit_switch(Control::Udp, false);
+        assert!(
+            !ui.get_udp_enabled(),
+            "settings switch must change before persistence completes"
+        );
+        controller.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(
+            ui.get_udp_enabled(),
+            "failed save restores the persisted/default value"
+        );
+        assert!(ui.get_settings_error().contains("settings write rejected"));
+        assert!(
+            controller
+                .errors
+                .borrow()
+                .join("\n")
+                .contains("settings write rejected")
+        );
+        let dialog = LogWindow::new().unwrap();
+        *controller.error_window.borrow_mut() = Some(dialog.as_weak());
+        for index in 0..600 {
+            controller.append_log(format!("progress {index}"));
+        }
+        controller.state.borrow_mut().begin(Job::Update);
+        controller.event(Event::Finished(Outcome::Failed(
+            "second full error cause".into(),
+        )));
+        assert!(dialog.get_log_text().contains("settings write rejected"));
+        assert!(dialog.get_log_text().contains("second full error cause"));
+        assert_eq!(controller.errors.borrow().len(), 2);
+        assert!(
+            execute(
+                tempfile::tempdir().unwrap().path(),
+                &ChannelConfig::default(),
+                Request::Launch,
+                &|_| {}
+            )
+            .is_err()
+        );
+    }
 }
