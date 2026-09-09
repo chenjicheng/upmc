@@ -227,9 +227,12 @@ def publish_pages(pages, descriptor, expected_head):
     frozen_marker = ".upmc-legacy-transition.json"
     _require(frozen_marker in entries, "Frozen 0.4.8 transition is required")
     frozen = _json_page(pages, entries, frozen_marker)
-    _require(frozen.get("version") == "0.4.8", "Unexpected frozen transition version")
+    _validate_descriptor(frozen, "0.4.8")
     for path in ("version.json", "dev/version.json"):
-        _require(path in entries and _json_page(pages, entries, path) == frozen,
+        _require(path in entries, "Original legacy entrypoint is required")
+        legacy = _json_page(pages, entries, path)
+        _validate_descriptor(legacy, "0.4.8")
+        _require(legacy == frozen,
                  "Original legacy entrypoints must match their frozen transition")
     if MARKER in entries:
         current_marker = _json_page(pages, entries, MARKER)
@@ -246,7 +249,9 @@ def publish_pages(pages, descriptor, expected_head):
     existing_feeds = []
     for path in PATHS:
         _require(path in entries, "Existing bridge descriptor is required")
-        existing_feeds.append(_json_page(pages, entries, path))
+        feed = _json_page(pages, entries, path)
+        _validate_descriptor(feed, "0.4.8" if feed.get("version") == "0.4.8" else PREDECESSOR_VERSION)
+        existing_feeds.append(feed)
         # Prevent a file/tree collision from deleting unrelated Pages content.
         _require(not any(key.startswith(path + "/") for key in entries), f"Pages target is a directory: {path}")
         for parent in Path(path).parents:
@@ -258,8 +263,6 @@ def publish_pages(pages, descriptor, expected_head):
         _require(PREDECESSOR_MARKER in entries, "Validated 0.5.1 release marker is required")
         predecessor = _json_page(pages, entries, PREDECESSOR_MARKER)
         _validate_descriptor(predecessor, PREDECESSOR_VERSION)
-        for feed in existing_feeds:
-            _validate_descriptor(feed, PREDECESSOR_VERSION)
         _require(existing == predecessor,
                  "Refusing to replace an unknown, newer or unmarked bridge release")
     payload = json.dumps(descriptor, indent=2, sort_keys=True) + "\n"

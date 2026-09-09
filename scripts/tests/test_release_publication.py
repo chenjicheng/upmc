@@ -12,6 +12,47 @@ pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 
 class ReleaseTests(Fixtures):
+    def assert_frozen_documents_rejected(self, mutations, valid_size):
+        pages, remote, _ = self.pages_fixture()
+        names = ('version.json', 'dev/version.json', '.upmc-legacy-transition.json', *pub.PATHS)
+        for name in names:
+            value = dict(self.descriptor(), size=valid_size)
+            value.update(mutations.get(name, {}))
+            (pages / name).write_text(json.dumps(value))
+        head = self.commit_pages(pages)
+        with self.assertRaises(pub.PublicationError):
+            pub.publish_pages(pages, self.new_descriptor(), head)
+        self.assertEqual(git(remote, 'rev-parse', 'gh-pages'), head)
+        self.assertEqual(git(pages, 'rev-parse', 'HEAD'), head)
+        self.assertEqual(git(pages, 'status', '--porcelain'), '')
+
+    def test_frozen_documents_reject_float_sizes_before_comparison(self):
+        original_root = self.root
+        groups = [('bridge/version.json', 'bridge/dev/version.json'),
+                  ('version.json',), ('dev/version.json',), ('.upmc-legacy-transition.json',)]
+        for index, names in enumerate(groups):
+            with self.subTest(paths=names):
+                self.root = original_root / str(index); self.root.mkdir()
+                self.assert_frozen_documents_rejected({name: {'size': float(len(self.payload))} for name in names}, len(self.payload))
+
+    def test_frozen_documents_reject_boolean_sizes_before_comparison(self):
+        original_root = self.root
+        groups = [('bridge/version.json', 'bridge/dev/version.json'),
+                  ('version.json',), ('dev/version.json',), ('.upmc-legacy-transition.json',)]
+        for index, names in enumerate(groups):
+            with self.subTest(paths=names):
+                self.root = original_root / str(index); self.root.mkdir()
+                self.assert_frozen_documents_rejected({name: {'size': True} for name in names}, 1)
+
+    def test_frozen_marker_schema_is_validated_even_when_all_documents_match(self):
+        original_root = self.root
+        for index, invalid in enumerate(({'build_id': 'short'}, {'sha256': 'bad'},
+                                        {'download_url': pub.DOWNLOAD_URL}, {'extra': 'invalid'})):
+            with self.subTest(invalid=invalid):
+                self.root = original_root / str(index); self.root.mkdir()
+                names = ('version.json', 'dev/version.json', '.upmc-legacy-transition.json', *pub.PATHS)
+                self.assert_frozen_documents_rejected({name: invalid for name in names}, len(self.payload))
+
     def predecessor(self):
         return dict(self.descriptor(), version='0.5.1',
                     download_url='https://github.com/chenjicheng/upmc/releases/download/v0.5.1/updater.exe')
