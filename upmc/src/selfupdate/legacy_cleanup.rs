@@ -75,6 +75,7 @@ impl Proof {
     fn cleanup(&self, successful: bool) -> Result<()> {
         ensure!(successful, "legacy parent did not complete successfully");
         let _lock = acquire_update_lock(&self.target, 1, Duration::ZERO)?;
+        library::ensure_process_can_update()?;
         // Staging and changed file identities invalidate an incoming proof.
         // Never reuse startup's broad directory cleanup here.
         for path in [
@@ -241,8 +242,54 @@ fn parent_pid() -> Result<u32> {
 }
 
 #[cfg(test)]
+pub(super) fn assert_poisoned_cleanup_retains_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("upmc.exe");
+    let helper = dir.path().join("upmc-update-helper-poison.exe");
+    fs::write(&target, b"MZinstalled").unwrap();
+    fs::write(target.with_extension("exe.old"), b"MZprevious").unwrap();
+    fs::write(&helper, b"MZprevious").unwrap();
+    let proof = Proof::capture(&target, &helper).unwrap();
+    assert!(
+        proof.cleanup(true).is_err(),
+        "a relocated process must reject a still-valid legacy cleanup receipt"
+    );
+    assert!(helper.exists());
+    assert!(target.with_extension("exe.old").exists());
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poisoned_process_fixture() {
+        if std::env::var_os("UPMC_LEGACY_POISON_FIXTURE").is_none() {
+            return;
+        }
+        library::poison_process_for_test();
+        assert_poisoned_cleanup_retains_files();
+    }
+
+    #[test]
+    fn poisoned_process_cannot_consume_deferred_legacy_cleanup_receipt() {
+        let output = restart_command(&current_exe_path().unwrap(), None)
+            .args([
+                "--exact",
+                "selfupdate::legacy_cleanup::tests::poisoned_process_fixture",
+                "--nocapture",
+            ])
+            .env("UPMC_LEGACY_POISON_FIXTURE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("upmc.exe");

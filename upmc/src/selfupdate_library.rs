@@ -8,6 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // this guard. In particular, failure must not permit cleanup in the old process.
 static PROCESS_MUTATED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(test)]
+pub(super) fn poison_process_for_test() {
+    PROCESS_MUTATED.store(true, Ordering::SeqCst);
+}
+
 pub(super) fn ensure_process_can_update() -> Result<()> {
     ensure!(
         !PROCESS_MUTATED.load(Ordering::SeqCst),
@@ -472,6 +477,44 @@ mod tests {
     }
 
     #[test]
+    fn backup_delete_failure_after_health_still_commits_success() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("updater.exe");
+        fs::write(&target, b"MZold fixture").unwrap();
+        let new = b"MZnew fixture";
+        let expected = ExecutableIdentity {
+            size: new.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(new)),
+        };
+        let ack = new_startup_health_ack(&target, &expected).unwrap();
+        let locked_backup = std::cell::RefCell::new(None);
+        transaction_with(
+            &target,
+            &expected,
+            &ack,
+            || {
+                fs::write(&target, new)?;
+                Ok(())
+            },
+            |_, _| Ok(()),
+            |_, _| {
+                *locked_backup.borrow_mut() = Some(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(1)
+                        .open(target.with_extension("exe.old"))?,
+                );
+                Ok(())
+            },
+            |_| panic!("cleanup failure must not terminate healthy candidate"),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), new);
+        assert!(target.with_extension("exe.old").exists());
+    }
+
+    #[test]
     fn native_replacement_fixture() {
         let Ok(role) = std::env::var("UPMC_NATIVE_LIBRARY_ROLE") else {
             return;
@@ -487,12 +530,12 @@ mod tests {
                 path: root.join("candidate.ack"),
                 token: "native-test-token".into(),
             };
-            write_health_ack(&ack).unwrap();
             fs::write(
                 root.join("candidate.started"),
                 std::process::id().to_string(),
             )
             .unwrap();
+            write_health_ack(&ack).unwrap();
             for _ in 0..300 {
                 if root.join("candidate.stop").exists() {
                     return;
@@ -502,6 +545,8 @@ mod tests {
             panic!("parent did not finish native test");
         }
         let target = current_exe_path().unwrap();
+        let previous = executable_identity(&target).unwrap();
+        let fail_launch = role == "old-launch-failure";
         let bytes = fs::read(root.join("candidate.bytes")).unwrap();
         let info = descriptor(&bytes);
         let expected = ExecutableIdentity {
@@ -513,7 +558,7 @@ mod tests {
             token: "native-test-token".into(),
         };
         let _lock = acquire_update_lock(&target, 1, Duration::ZERO).unwrap();
-        transaction_with(
+        let result = transaction_with(
             &target,
             &expected,
             &ack,
@@ -523,6 +568,12 @@ mod tests {
                 })
             },
             |path, _| {
+                if fail_launch {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "native injected candidate launch failure",
+                    ));
+                }
                 fixture_command(path, &root, "candidate")
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -530,11 +581,46 @@ mod tests {
             },
             wait_for_candidate_health,
             terminate_candidate,
+        );
+        if fail_launch {
+            assert!(
+                format!("{:#}", result.unwrap_err())
+                    .contains("native injected candidate launch failure")
+            );
+            verify_executable_identity(&target, &previous).unwrap();
+        } else {
+            result.unwrap();
+        }
+        fs::write(root.join("old.completed"), b"verified").unwrap();
+        let active_images: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| {
+                name.contains(".__relocated__.")
+                    || name.contains(".__selfdelete__.")
+                    || name.contains(".__temp__.")
+            })
+            .collect();
+        assert!(
+            active_images
+                .iter()
+                .any(|name| name.contains(".__relocated__.")),
+            "actual self-replace must retain the running old image until this process exits"
+        );
+        fs::write(
+            root.join("library.active.json"),
+            serde_json::to_vec(&active_images).unwrap(),
         )
         .unwrap();
-        fs::write(root.join("old.completed"), b"verified").unwrap();
         assert!(ensure_process_can_update().is_err());
+        assert!(
+            check_and_update(UpdateChannel::Stable, &|_| panic!(
+                "poisoned retry must stop before fetching or emitting progress"
+            ))
+            .is_err()
+        );
         assert!(cleanup_self_update_artifacts(&current_exe_path().unwrap()).is_err());
+        legacy_cleanup::assert_poisoned_cleanup_retains_files();
     }
 
     fn fixture_command(exe: &Path, root: &Path, role: &str) -> Command {
@@ -546,21 +632,33 @@ mod tests {
                 "--nocapture",
             ])
             .env("UPMC_NATIVE_LIBRARY_ROLE", role)
-            .env("UPMC_NATIVE_LIBRARY_ROOT", root);
+            .env("UPMC_NATIVE_LIBRARY_ROOT", root)
+            // self-replace relocates the mapped image to the process temp root.
+            // Isolate that root too, so the test observes every library image.
+            .env("TEMP", root)
+            .env("TMP", root);
         command
     }
 
     #[test]
     fn native_windows_library_replaces_running_exe_restarts_and_cleans_after_exit() {
+        run_native_update_case("old");
+    }
+
+    #[test]
+    fn native_windows_post_replace_launch_failure_restores_and_poisons_old_process() {
+        run_native_update_case("old-launch-failure");
+    }
+
+    fn run_native_update_case(role: &str) {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("updater.exe");
         fs::copy(current_exe_path().unwrap(), &target).unwrap();
         let mut bytes = fs::read(&target).unwrap();
+        let old_bytes = bytes.clone();
         bytes.extend_from_slice(b"UPMC native candidate distinct PE overlay");
         fs::write(dir.path().join("candidate.bytes"), &bytes).unwrap();
-        let output = fixture_command(&target, dir.path(), "old")
-            .output()
-            .unwrap();
+        let output = fixture_command(&target, dir.path(), role).output().unwrap();
         fs::write(dir.path().join("candidate.stop"), b"stop").unwrap();
         assert!(
             output.status.success(),
@@ -569,8 +667,11 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(dir.path().join("old.completed").exists());
-        assert!(dir.path().join("candidate.started").exists());
-        assert_eq!(fs::read(&target).unwrap(), bytes);
+        assert_eq!(dir.path().join("candidate.started").exists(), role == "old");
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            if role == "old" { bytes } else { old_bytes }
+        );
         let leftovers = || {
             fs::read_dir(dir.path())
                 .unwrap()
@@ -593,6 +694,20 @@ mod tests {
             leftovers().is_empty(),
             "library cleanup did not finish: {:?}",
             leftovers()
+        );
+        assert!(
+            fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_type()
+                .unwrap()
+                .is_dir()),
+            "library download staging directory must be removed"
+        );
+        println!(
+            "native case={role}; active library images={}; library images after old exit={:?}; backup retained={}",
+            fs::read_to_string(dir.path().join("library.active.json")).unwrap(),
+            leftovers(),
+            target.with_extension("exe.old").exists()
         );
     }
 }
