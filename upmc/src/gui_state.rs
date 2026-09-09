@@ -20,6 +20,10 @@ pub enum Outcome {
 }
 #[derive(Debug, Default)]
 pub struct UiState {
+    pub started: Option<std::time::Instant>,
+    pub previous_status: String,
+    pub previous_ready: bool,
+    pub progress_detail: String,
     pub busy: Option<Job>,
     pub ready: bool,
     pub proxy: bool,
@@ -33,6 +37,10 @@ impl UiState {
         if self.busy.is_some() || self.exit || (job == Job::Launch && !self.ready) {
             return false;
         }
+        self.previous_status = self.status.clone();
+        self.previous_ready = self.ready;
+        self.started = Some(std::time::Instant::now());
+        self.progress_detail.clear();
         self.busy = Some(job);
         self.error.clear();
         self.percent = 0;
@@ -41,8 +49,14 @@ impl UiState {
                 self.ready = false;
                 "正在检查更新"
             }
-            Job::ProxyStart => "正在启用代理",
-            Job::ProxyStop => "正在停止代理",
+            Job::ProxyStart => {
+                self.proxy = true;
+                "已启用"
+            }
+            Job::ProxyStop => {
+                self.proxy = false;
+                "未启用"
+            }
             Job::Settings => "正在保存设置",
             Job::Launch => "正在启动 PCL",
         };
@@ -55,6 +69,8 @@ impl UiState {
         let Some(job) = self.busy.take() else {
             return;
         };
+        self.started = None;
+        self.progress_detail.clear();
         let activity = match outcome {
             Outcome::Updated(proxy) => {
                 self.ready = true;
@@ -111,6 +127,31 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn proxy_switch_is_optimistic_and_failure_restores_off_with_full_error() {
+        let mut s = UiState::default();
+        s.begin(Job::Update);
+        s.finish(Outcome::Updated(false));
+        assert!(s.begin(Job::ProxyStart));
+        assert!(s.proxy, "clicking start must light the switch immediately");
+        s.finish(Outcome::Failed(
+            "subscription failed: HTTP 503; upstream unavailable".into(),
+        ));
+        assert!(!s.proxy);
+        assert_eq!(
+            s.error,
+            "subscription failed: HTTP 503; upstream unavailable"
+        );
+        assert!(s.ready);
+        s.begin(Job::ProxyStart);
+        s.finish(Outcome::ProxyStarted);
+        assert!(s.proxy);
+        s.begin(Job::ProxyStop);
+        assert!(
+            !s.proxy,
+            "stop also applies the requested switch position immediately"
+        );
+    }
     #[test]
     fn proxy_start_and_stop_leave_game_status_unchanged() {
         let mut s = UiState::default();

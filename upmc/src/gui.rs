@@ -35,34 +35,59 @@ impl UpdaterApp {
 }
 
 fn render(ui: &App, state: &UiState) {
+    render_at(
+        ui,
+        state,
+        state
+            .started
+            .map_or(Duration::ZERO, |start| start.elapsed()),
+    );
+}
+fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
     let busy = state.busy.is_some();
     ui.set_busy(busy);
-    let main_busy = matches!(state.busy, Some(Job::Update | Job::Launch));
+    let main_job = matches!(state.busy, Some(Job::Update | Job::Launch));
+    let main_busy = main_job && elapsed >= Duration::from_millis(300);
     ui.set_main_busy(main_busy);
-    ui.set_updating(state.busy == Some(Job::Update));
+    ui.set_updating(main_busy && state.busy == Some(Job::Update));
     ui.set_launchable(state.ready && !busy);
     ui.set_proxy_on(state.proxy);
     ui.set_proxy_text(
-        if state.busy == Some(Job::ProxyStart) {
-            "正在连接"
-        } else if state.busy == Some(Job::ProxyStop) {
-            "正在停止"
-        } else if state.proxy {
-            "代理已连接"
+        if state.proxy {
+            "已启用"
         } else {
-            "代理未启用"
+            "未启用"
         }
         .into(),
     );
-    ui.set_status(state.status.clone().into());
+    ui.set_status(if main_job && !main_busy {
+        if state.previous_status.is_empty() {
+            "准备整合包".into()
+        } else {
+            state.previous_status.clone().into()
+        }
+    } else {
+        state.status.clone().into()
+    });
     ui.set_scenario(if state.error.is_empty() { 0 } else { 5 });
-    ui.set_detail(state.error.chars().take(100).collect::<String>().into());
+    ui.set_detail(
+        if !state.error.is_empty() {
+            state.error.chars().take(100).collect::<String>()
+        } else if main_busy {
+            state.progress_detail.clone()
+        } else {
+            String::new()
+        }
+        .into(),
+    );
     ui.set_has_error(!state.error.is_empty());
     ui.set_progress(state.percent.min(100) as i32);
     ui.set_action_text(
         if main_busy {
             "请稍候…"
-        } else if state.ready {
+        } else if state.ready
+            || (main_job && (state.previous_ready || state.previous_status.is_empty()))
+        {
             "启动 PCL"
         } else {
             "重试更新"
@@ -110,6 +135,11 @@ struct Controller {
     executor: Executor,
 }
 impl Controller {
+    fn repaint(&self) {
+        if let Some(ui) = self.ui.upgrade() {
+            render(&ui, &self.state.borrow());
+        }
+    }
     fn refresh(&self) {
         if let Some(ui) = self.ui.upgrade() {
             render(&ui, &self.state.borrow());
@@ -132,6 +162,13 @@ impl Controller {
             return;
         }
         self.refresh();
+        if let Some(ui) = self.ui.upgrade() {
+            match &request {
+                Request::Udp(value) => ui.set_udp_enabled(*value),
+                Request::Channel(value) => ui.set_dev_channel(*value == UpdateChannel::Dev),
+                _ => {}
+            }
+        }
         let base = self.base.clone();
         let channel = self.channel.borrow().clone();
         let sender = self.sender.clone();
@@ -164,12 +201,9 @@ impl Controller {
                 let mut state = self.state.borrow_mut();
                 state.percent = p.percent.min(100);
                 self.append_log(format!("[{}%] {}", state.percent, p.message));
-                if state.busy == Some(Job::Update)
-                    && let Some(ui) = self.ui.upgrade()
-                {
-                    ui.set_progress(state.percent as i32);
-                    ui.set_detail(p.message.into());
-                }
+                state.progress_detail = p.message;
+                drop(state);
+                self.repaint();
             }
             Event::Finished(outcome) => {
                 if matches!(outcome, Outcome::Saved) {
@@ -369,6 +403,9 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
             for event in receiver.try_iter().take(128) {
                 c.event(event);
             }
+            if c.state.borrow().busy.is_some() {
+                c.repaint();
+            }
         },
     );
     controller.start(Request::Update);
@@ -380,6 +417,25 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
 mod tests {
     use super::*;
     use crate::gui_state::{Job, Outcome};
+    #[test]
+    fn short_busy_hints_are_not_shown_but_long_updates_are_visible() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let mut state = UiState::default();
+        state.begin(Job::Update);
+        state.finish(Outcome::Updated(false));
+        state.begin(Job::Update);
+        render_at(&ui, &state, Duration::from_millis(299));
+        assert!(!ui.get_main_busy());
+        assert_eq!(ui.get_status(), "一切就绪");
+        assert_eq!(ui.get_action_text(), "启动 PCL");
+        render_at(&ui, &state, Duration::from_millis(300));
+        assert!(ui.get_main_busy() && ui.get_updating());
+        assert_eq!(ui.get_action_text(), "请稍候…");
+        state.finish(Outcome::Failed("explicit failure".into()));
+        render_at(&ui, &state, Duration::ZERO);
+        assert!(ui.get_has_error());
+    }
     #[test]
     #[ignore = "interactive Windows smoke; backend effects isolated to temporary fixture"]
     fn desktop_window_smoke() {
@@ -405,11 +461,21 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(300));
                     Ok(Outcome::Updated(false))
                 }
-                Request::Proxy(value) => Ok(if value {
-                    Outcome::ProxyStarted
-                } else {
-                    Outcome::ProxyStopped
-                }),
+                Request::Proxy(value) => {
+                    std::thread::sleep(Duration::from_millis(800));
+                    let attempted = base.join("proxy-attempted");
+                    if value && !attempted.exists() {
+                        std::fs::write(attempted, "fixture")?;
+                        anyhow::bail!(
+                            "隔离测试：代理启动失败；订阅服务器返回 HTTP 503。可重试，未修改真实 Discord。"
+                        );
+                    }
+                    Ok(if value {
+                        Outcome::ProxyStarted
+                    } else {
+                        Outcome::ProxyStopped
+                    })
+                }
                 Request::Launch => anyhow::bail!("隔离测试：启动失败时保留窗口和错误详情"),
                 other => execute(base, channel, other, progress),
             }
@@ -440,7 +506,7 @@ mod tests {
         let ui = App::new().unwrap();
         let mut state = UiState::default();
         state.begin(Job::Update);
-        render(&ui, &state);
+        render_at(&ui, &state, Duration::from_millis(300));
         assert!(!ui.get_launchable());
         let clicks = Rc::new(std::cell::Cell::new(0));
         let count = clicks.clone();
@@ -475,6 +541,11 @@ mod tests {
             "proxy activity must not flash the primary action label"
         );
         assert!(!ui.get_updating());
+        assert_eq!(
+            ui.get_proxy_text(),
+            "已启用",
+            "switch displays intent without a connecting intermediate state"
+        );
         assert_eq!(find("启动 PCL").absolute_position(), launch_position);
         assert_eq!(find("Discord 代理开关").absolute_position(), proxy_position);
         state.finish(Outcome::ProxyStarted);
@@ -497,6 +568,37 @@ mod tests {
                 .is_some()
         );
         find("开源许可");
+        let temp = tempfile::tempdir().unwrap();
+        config::save_user_settings(
+            temp.path(),
+            &config::UserSettings {
+                proxy_udp: true,
+                proxy_enabled: false,
+            },
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let controller = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            sender,
+            executor: |_, _, _, _| anyhow::bail!("fixture: settings write rejected"),
+        };
+        ui.set_udp_enabled(true);
+        controller.start(Request::Udp(false));
+        assert!(
+            !ui.get_udp_enabled(),
+            "settings switch must change before persistence completes"
+        );
+        controller.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(
+            ui.get_udp_enabled(),
+            "failed save restores the persisted/default value"
+        );
+        assert!(ui.get_has_error());
         assert!(
             execute(
                 tempfile::tempdir().unwrap().path(),

@@ -22,7 +22,7 @@ component Action inherits Rectangle {
 component ToggleSwitch inherits Rectangle {
  in property <bool> enabled: true;
  accessible-enabled: root.enabled;
- opacity: root.enabled ? 1 : 0.45;
+ opacity: 1;
  in property <bool> checked;
  in property <string> accessible-name;
  callback toggled;
@@ -35,7 +35,7 @@ component ToggleSwitch inherits Rectangle {
  forward-focus: keys;
  Rectangle {
   y: 6px; width: 40px; height: 20px; border-radius: 10px;
-  background: root.checked ? (touch.has-hover ? #487f60 : #619775) : (touch.has-hover ? #b3bcb3 : #c4ccc4);
+  background: root.checked ? #619775 : #c4ccc4;
   animate background { duration: 160ms; }
   Rectangle {
    x: root.checked ? 23px : 3px; y: 3px; width: 14px; height: 14px;
