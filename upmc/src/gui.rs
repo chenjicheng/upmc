@@ -144,7 +144,7 @@ enum Event {
 }
 type Executor = fn(&Path, &ChannelConfig, Request, &dyn Fn(Progress)) -> Result<Outcome>;
 #[cfg(test)]
-type NativeTestDriver = Box<dyn FnMut(&App, &Controller, bool)>;
+type NativeTestDriver = Box<dyn FnMut(&App, &Controller)>;
 #[cfg(test)]
 thread_local! {
     static NATIVE_TEST_DRIVER: RefCell<Option<NativeTestDriver>> = RefCell::new(None);
@@ -155,7 +155,6 @@ struct Controller {
     channel: RefCell<ChannelConfig>,
     udp: Cell<bool>,
     hide_after_launch: Cell<bool>,
-    hide_window: Box<dyn Fn(&App) -> Result<()>>,
     state: RefCell<UiState>,
     log: RefCell<Vec<String>>,
     switches: RefCell<SwitchQueue>,
@@ -342,12 +341,7 @@ impl Controller {
                 self.refresh();
                 if launched && self.hide_after_launch.get() {
                     if let Some(ui) = self.ui.upgrade() {
-                        if let Err(error) = (self.hide_window)(&ui) {
-                            let message = format!("隐藏窗口失败：{error:#}");
-                            self.record_error(message.clone());
-                            self.state.borrow_mut().launch_window_error(message);
-                            self.refresh();
-                        }
+                        ui.window().set_minimized(true);
                     }
                 }
                 if self.state.borrow().exit {
@@ -371,21 +365,6 @@ impl Controller {
             false
         } else {
             true
-        }
-    }
-    fn restore_window(&self, show: impl FnOnce(&App) -> Result<()>) {
-        use slint::winit_030::WinitWindowAccessor;
-        if let Some(ui) = self.ui.upgrade() {
-            if let Err(error) = show(&ui) {
-                let message = format!("恢复窗口失败：{error:#}");
-                self.record_error(message.clone());
-                self.state.borrow_mut().launch_window_error(message);
-                self.refresh();
-                return;
-            }
-            ui.window().set_minimized(false);
-            ui.window()
-                .with_winit_window(|window| window.focus_window());
         }
     }
 }
@@ -461,27 +440,12 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     let (sender, receiver) = mpsc::sync_channel(64);
     let initial_settings = config::load_user_settings(&base);
-    let tray = Rc::new(RefCell::new(None));
-    let hide_tray = tray.clone();
     let controller = Rc::new(Controller {
         ui: ui.as_weak(),
         base,
         channel: RefCell::new(channel),
         udp: Cell::new(initial_settings.proxy_udp),
         hide_after_launch: Cell::new(initial_settings.hide_after_launch),
-        hide_window: Box::new(move |ui| {
-            if hide_tray.borrow().is_none() {
-                let icon = tray_icon::Icon::from_resource(1, Some((32, 32)))?;
-                *hide_tray.borrow_mut() = Some(
-                    tray_icon::TrayIconBuilder::new()
-                        .with_icon(icon)
-                        .with_tooltip("UPMC · 点击显示窗口")
-                        .build()?,
-                );
-            }
-            ui.hide()?;
-            Ok(())
-        }),
         state: RefCell::new(UiState::default()),
         log: RefCell::new(Vec::new()),
         switches: RefCell::new(SwitchQueue::default()),
@@ -591,18 +555,6 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
         slint::TimerMode::Repeated,
         Duration::from_millis(60),
         move || {
-            for event in tray_icon::TrayIconEvent::receiver().try_iter().take(16) {
-                if matches!(
-                    event,
-                    tray_icon::TrayIconEvent::Click {
-                        button: tray_icon::MouseButton::Left,
-                        button_state: tray_icon::MouseButtonState::Up,
-                        ..
-                    }
-                ) {
-                    c.restore_window(|ui| ui.show().map_err(Into::into));
-                }
-            }
             for event in receiver.try_iter().take(128) {
                 c.event(event);
             }
@@ -614,14 +566,14 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
                 if let Some(driver) = driver.borrow_mut().as_mut()
                     && let Some(ui) = c.ui.upgrade()
                 {
-                    driver(&ui, &c, tray.borrow().is_some());
+                    driver(&ui, &c);
                 }
             });
         },
     );
     controller.start(Request::Update);
     ui.show()?;
-    slint::run_event_loop_until_quit()?;
+    slint::run_event_loop()?;
     Ok(())
 }
 
@@ -636,9 +588,9 @@ mod tests {
         let outcome = result.clone();
         let started = std::time::Instant::now();
         let mut stage = 0;
-        let mut hidden_ticks = 0;
+        let mut minimized_ticks = 0;
         NATIVE_TEST_DRIVER.with(|driver| {
-            *driver.borrow_mut() = Some(Box::new(move |ui, controller, tray_exists| {
+            *driver.borrow_mut() = Some(Box::new(move |ui, controller| {
                 let tick = (|| -> Result<()> {
                     anyhow::ensure!(
                         started.elapsed() < Duration::from_secs(15),
@@ -675,13 +627,18 @@ mod tests {
                                 "default launch did not complete"
                             );
                             anyhow::ensure!(
-                                ui.window().is_visible() && !tray_exists,
-                                "default launch hid the native window or created a tray"
+                                ui.window().is_visible(),
+                                "default launch hid the native window"
                             );
                             anyhow::ensure!(
                                 ui.window().with_winit_window(|w| w.is_visible())
                                     == Some(Some(true)),
                                 "native window is not visible"
+                            );
+                            anyhow::ensure!(
+                                ui.window().with_winit_window(|w| w.is_minimized())
+                                    == Some(Some(false)),
+                                "default launch minimized the window"
                             );
                             ui.invoke_hide_after_launch_change(true);
                             anyhow::ensure!(
@@ -703,20 +660,24 @@ mod tests {
                                 controller.state.borrow().status == "PCL 已启动",
                                 "opt-in launch did not complete"
                             );
-                            anyhow::ensure!(tray_exists, "real tray icon was not created");
                             anyhow::ensure!(
-                                !ui.window().is_visible(),
-                                "opt-in did not hide window"
+                                ui.window().is_visible(),
+                                "taskbar minimization must retain the shown window"
                             );
                             anyhow::ensure!(
                                 ui.window().with_winit_window(|w| w.is_visible())
-                                    == Some(Some(false)),
-                                "native window is still visible after hiding"
+                                    == Some(Some(true)),
+                                "native window must stay visible to the taskbar"
                             );
-                            hidden_ticks += 1;
-                            // Reaching later timer ticks while hidden proves the loop is still alive.
-                            if hidden_ticks >= 3 {
-                                controller.restore_window(|ui| ui.show().map_err(Into::into));
+                            anyhow::ensure!(
+                                ui.window().with_winit_window(|w| w.is_minimized())
+                                    == Some(Some(true)),
+                                "opt-in did not minimize native window"
+                            );
+                            minimized_ticks += 1;
+                            // Reaching later timer ticks while minimized proves the loop is still alive.
+                            if minimized_ticks >= 3 {
+                                ui.window().set_minimized(false);
                                 stage = 4;
                             }
                         }
@@ -739,7 +700,7 @@ mod tests {
                             {
                                 return Ok(());
                             }
-                            controller.restore_window(|ui| ui.show().map_err(Into::into));
+                            ui.window().set_minimized(false);
                             stage = 6;
                         }
                         6 => {
@@ -814,7 +775,6 @@ mod tests {
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(true),
             hide_after_launch: Cell::new(false),
-            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),
@@ -825,43 +785,26 @@ mod tests {
         }
     }
     #[test]
-    fn launch_visibility_and_hide_failure_keep_updater_usable() {
+    fn default_launch_and_failed_opt_in_launch_keep_updater_usable() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = App::new().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let (sender, _) = mpsc::sync_channel(64);
-        let mut c = launch_controller(&ui, temp.path(), sender);
-        let hides = Rc::new(Cell::new(0));
-        let calls = hides.clone();
-        c.hide_window = Box::new(move |_| {
-            calls.set(calls.get() + 1);
-            Ok(())
-        });
+        let c = launch_controller(&ui, temp.path(), sender);
+        ui.show().unwrap();
         c.state.borrow_mut().ready = true;
         c.state.borrow_mut().begin(Job::Launch);
         c.event(Event::Finished(Outcome::Launched));
-        assert_eq!(hides.get(), 0);
+        assert!(ui.window().is_visible());
         assert!(!c.state.borrow().exit);
         c.hide_after_launch.set(true);
         c.state.borrow_mut().begin(Job::Launch);
         c.event(Event::Finished(Outcome::Failed("spawn denied".into())));
-        assert_eq!(hides.get(), 0);
-        c.state.borrow_mut().begin(Job::Launch);
-        c.event(Event::Finished(Outcome::Launched));
-        assert_eq!(hides.get(), 1);
-        c.hide_window = Box::new(|_| anyhow::bail!("tray creation denied"));
-        c.state.borrow_mut().begin(Job::Launch);
-        c.event(Event::Finished(Outcome::Launched));
+        assert!(ui.window().is_visible());
         assert!(c.state.borrow().ready);
         assert!(!c.state.borrow().exit);
         assert!(ui.get_has_error());
-        assert!(
-            c.errors
-                .borrow()
-                .last()
-                .unwrap()
-                .contains("tray creation denied")
-        );
+        assert!(c.errors.borrow().last().unwrap().contains("spawn denied"));
         assert!(c.request_close());
     }
     #[test]
@@ -905,34 +848,11 @@ mod tests {
         assert_eq!(
             quits.get(),
             1,
-            "native close must quit while hide-to-tray keeps the loop alive"
+            "native close must quit while a minimized window keeps the loop alive"
         );
         c.state.borrow_mut().begin(Job::Update);
         native_close(&c, || quits.set(quits.get() + 1));
         assert_eq!(quits.get(), 1, "busy close must leave the job running");
-    }
-    #[test]
-    fn tray_restore_failure_is_visible_in_shared_error_surface_and_retry_works() {
-        i_slint_backend_testing::init_no_event_loop();
-        let ui = App::new().unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let (sender, _) = mpsc::sync_channel(64);
-        let c = launch_controller(&ui, temp.path(), sender);
-        c.restore_window(|_| anyhow::bail!("window unavailable"));
-        assert!(
-            ui.get_has_error(),
-            "restoration failure needs an error details affordance"
-        );
-        assert!(
-            c.errors
-                .borrow()
-                .last()
-                .unwrap()
-                .contains("window unavailable")
-        );
-        c.restore_window(|ui| ui.show().map_err(Into::into));
-        assert!(ui.window().is_visible());
-        assert!(!c.state.borrow().exit);
     }
     #[test]
     fn another_setting_does_not_hide_a_failed_setting() {
@@ -963,7 +883,6 @@ mod tests {
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(true),
             hide_after_launch: Cell::new(false),
-            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),
@@ -996,7 +915,6 @@ mod tests {
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(false),
             hide_after_launch: Cell::new(false),
-            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),
@@ -1063,7 +981,6 @@ mod tests {
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(true),
             hide_after_launch: Cell::new(false),
-            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),
@@ -1313,7 +1230,6 @@ mod tests {
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(true),
             hide_after_launch: Cell::new(false),
-            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),

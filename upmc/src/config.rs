@@ -302,6 +302,7 @@ pub struct UserSettings {
     /// 是否代理 Discord UDP 语音流量。新安装和旧版升级默认开启。
     pub proxy_udp: bool,
     pub proxy_enabled: bool,
+    /// Minimize to the taskbar after launch. Keep the historic wire key for upgrades.
     pub hide_after_launch: bool,
 }
 
@@ -423,6 +424,20 @@ mod user_settings_tests {
         let mut settings = UserSettings::default();
         settings.hide_after_launch = true;
         save_user_settings(base.path(), &settings).unwrap();
+        assert!(load_user_settings(base.path()).hide_after_launch);
+    }
+    #[test]
+    fn previous_explicit_hide_preference_remains_opted_in_to_minimization() {
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join(super::USER_SETTINGS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"hide_after_launch":true,"proxy_enabled":false,"proxy_udp":false,"udp_policy_revision":1}"#).unwrap();
+        let settings = load_user_settings(base.path());
+        assert!(settings.hide_after_launch);
+        assert!(!settings.proxy_enabled && !settings.proxy_udp);
+        save_user_settings(base.path(), &settings).unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(stored["hide_after_launch"], true);
         assert!(load_user_settings(base.path()).hide_after_launch);
     }
     #[test]

@@ -193,11 +193,11 @@ export component App inherits Window {
     Rectangle { height: 16px; }
     HorizontalBox { padding: 0px; spacing: 24px; height: 56px;
      VerticalBox { padding: 0px; spacing: 8px;
-      Text { text: "启动游戏后隐藏窗口"; color: #435044; font-size: 14px; height: 22px; }
-      Text { text: "隐藏到系统托盘，点击图标恢复"; color: #657066; font-size: 12px; height: 20px; }
+      Text { text: "启动游戏后最小化"; color: #435044; font-size: 14px; height: 22px; }
+      Text { text: "最小化到任务栏，点击恢复窗口"; color: #657066; font-size: 12px; height: 20px; }
      }
      Rectangle { width: 40px; height: 56px;
-      ToggleSwitch { enabled: root.switches-enabled; y: 12px; accessible-name: "启动后隐藏开关"; checked: root.hide-after-launch; toggled => {root.hide-after-launch-change(!root.hide-after-launch);} }
+      ToggleSwitch { enabled: root.switches-enabled; y: 12px; accessible-name: "启动后最小化开关"; checked: root.hide-after-launch; toggled => {root.hide-after-launch-change(!root.hide-after-launch);} }
      }
     }
     Rectangle { vertical-stretch: 1; }
