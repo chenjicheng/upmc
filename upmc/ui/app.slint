@@ -8,6 +8,8 @@ component Action inherits Rectangle {
  in property <string> accessible-name: label;
  in property <bool> active: false;
  in property <bool> primary: false;
+ in property <color> text-color: #59625b;
+ in property <bool> left-aligned: false;
  callback clicked;
  height: 34px; border-radius: 6px;
  forward-focus: keys;
@@ -15,7 +17,7 @@ component Action inherits Rectangle {
  accessible-action-default => { if root.enabled { root.clicked(); } }
  border-width: keys.has-focus ? 2px : 0px; border-color: #738079;
  background: primary ? (touch.has-hover ? #3e4741 : #28332c) : (active || touch.has-hover ? #e7ebe7 : transparent);
- Text { accessible-role: none; text: root.label; color: root.primary ? #ffffff : #59625b; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+ Text { accessible-role: none; text: root.label; color: root.primary ? #ffffff : root.text-color; font-size: 13px; horizontal-alignment: root.left-aligned ? left : center; vertical-alignment: center; }
  keys := FocusScope { enabled: root.enabled; width: 0px; key-pressed(event) => { if (event.text == " " || event.text == "\n") { root.clicked(); return accept; } return reject; } }
  touch := TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
 }
@@ -107,6 +109,8 @@ export component App inherits Window {
  in property <bool> main-busy: false;
  in property <bool> updating: false;
  in property <bool> has-error: false;
+ in property <bool> proxy-error: false;
+ in property <string> settings-error;
  in property <int> progress: 0;
  in property <bool> dev-channel: false;
  callback udp-change(bool);
@@ -143,10 +147,12 @@ export component App inherits Window {
     Rectangle { height: 3px; background: root.updating ? #e0e5de : transparent; Rectangle { visible: root.updating; width: parent.width * root.progress / 100; background: #619775; } }
     Rectangle { height: 8px; }
     Rectangle { height: 32px;
-     Action { enabled: !root.busy; dim-disabled: root.main-busy; x: root.has-error ? (parent.width - 184px) / 2 : (parent.width - 88px) / 2; y: 0px; label: "检查更新"; width: 88px; height: 32px; clicked => {root.check-update();} }
-     if root.has-error : Action { x: (parent.width - 184px) / 2 + 96px; label: "错误详情"; width: 88px; height: 32px; clicked => {root.show-logs();} }
+     Action { enabled: !root.busy; dim-disabled: root.main-busy; x: (parent.width - 88px) / 2; y: 0px; label: "检查更新"; width: 88px; height: 32px; clicked => {root.check-update();} }
     }
-    Text { text: root.feedback; color: #71816d; font-size: 11px; height: 18px; horizontal-alignment: center; }
+    Rectangle { height: 20px;
+     Text { visible: !root.has-error; text: root.feedback; color: #71816d; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+     if root.has-error : Action { x: (parent.width - 112px) / 2; width: 112px; height: 20px; label: "查看错误详情"; accessible-name: "错误详情"; text-color: #9c513b; clicked => {root.show-logs();} }
+    }
     Rectangle { vertical-stretch: 1; min-height: 4px; }
     Rectangle { height: 1px; background: #e0e5de; }
     HorizontalBox { padding: 0px; spacing: 12px; height: 48px;
@@ -154,8 +160,10 @@ export component App inherits Window {
      Rectangle { width: 40px; height: 48px;
       ToggleSwitch { enabled: !root.busy; y: 8px; accessible-name: "Discord 代理开关"; checked: root.proxy-on; toggled => {root.proxy-toggle();} }
      }
-     Text { text: root.proxy-text; color: root.proxy-on && root.scenario == 4 ? #a16a45 : #929a90; vertical-alignment: center; font-size: 12px; horizontal-stretch: 0; }
-     Rectangle { horizontal-stretch: 1; }
+     Rectangle { horizontal-stretch: 1;
+      Text { visible: !root.proxy-error; text: root.proxy-text; color: #778174; vertical-alignment: center; font-size: 12px; }
+      if root.proxy-error : Action { y: 8px; height: 32px; width: parent.width; label: "未启用 · 查看原因"; accessible-name: "代理错误详情"; text-color: #9c513b; left-aligned: true; clicked => { root.show-logs(); } }
+     }
     }
     Text { text: "UPMC " + root.app-version; color: #a2aaa0; font-size: 10px; height: 16px; }
    }
@@ -180,7 +188,10 @@ export component App inherits Window {
      }
     }
     Rectangle { vertical-stretch: 1; }
-    Text { text: root.has-error ? root.detail : "设置自动保存；UDP 设置在下次启用代理时生效"; wrap: word-wrap; color: #657066; font-size: 12px; min-height: 36px; }
+    Rectangle { height: 32px;
+     if root.settings-error != "" : Action { label: "设置保存失败 · 查看原因"; accessible-name: "设置错误详情"; text-color: #9c513b; clicked => { root.show-logs(); } }
+    }
+    Text { text: "设置自动保存；UDP 设置在下次启用代理时生效"; wrap: word-wrap; color: #657066; font-size: 12px; min-height: 36px; }
    }
    if root.page == 2 : about-scroll := ScrollView {
     horizontal-scrollbar-policy: always-off;

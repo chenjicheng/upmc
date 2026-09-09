@@ -30,9 +30,13 @@ pub struct UiState {
     pub exit: bool,
     pub status: String,
     pub error: String,
+    error_job: Option<Job>,
     pub percent: u32,
 }
 impl UiState {
+    pub fn error_job(&self) -> Option<Job> {
+        self.error_job
+    }
     pub fn begin(&mut self, job: Job) -> bool {
         if self.busy.is_some() || self.exit || (job == Job::Launch && !self.ready) {
             return false;
@@ -42,7 +46,12 @@ impl UiState {
         self.started = Some(std::time::Instant::now());
         self.progress_detail.clear();
         self.busy = Some(job);
-        self.error.clear();
+        let retrying_proxy = matches!(job, Job::ProxyStart | Job::ProxyStop)
+            && matches!(self.error_job, Some(Job::ProxyStart | Job::ProxyStop));
+        if job == Job::Update || self.error_job == Some(job) || retrying_proxy {
+            self.error.clear();
+            self.error_job = None;
+        }
         self.percent = 0;
         let activity = match job {
             Job::Update => {
@@ -103,6 +112,7 @@ impl UiState {
             }
             Outcome::Failed(error) => {
                 self.error = error;
+                self.error_job = Some(job);
                 match job {
                     Job::Update => "更新失败",
                     Job::ProxyStart => {
@@ -127,6 +137,22 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unrelated_setting_save_does_not_erase_launch_error_details() {
+        let mut s = UiState::default();
+        s.begin(Job::Update);
+        s.finish(Outcome::Updated(false));
+        s.begin(Job::Launch);
+        s.finish(Outcome::Failed("PCL executable missing".into()));
+        s.begin(Job::Settings);
+        s.finish(Outcome::Saved);
+        assert_eq!(s.error, "PCL executable missing");
+        s.begin(Job::Launch);
+        assert!(
+            s.error.is_empty(),
+            "retrying the failed action clears its old error"
+        );
+    }
     #[test]
     fn proxy_switch_is_optimistic_and_failure_restores_off_with_full_error() {
         let mut s = UiState::default();

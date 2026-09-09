@@ -69,9 +69,19 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
     } else {
         state.status.clone().into()
     });
-    ui.set_scenario(if state.error.is_empty() { 0 } else { 5 });
+    let main_error = matches!(state.error_job(), Some(Job::Update | Job::Launch));
+    ui.set_proxy_error(matches!(
+        state.error_job(),
+        Some(Job::ProxyStart | Job::ProxyStop)
+    ));
+    ui.set_settings_error(if state.error_job() == Some(Job::Settings) {
+        state.error.clone().into()
+    } else {
+        "".into()
+    });
+    ui.set_scenario(if main_error { 5 } else { 0 });
     ui.set_detail(
-        if !state.error.is_empty() {
+        if main_error {
             state.error.chars().take(100).collect::<String>()
         } else if main_busy {
             state.progress_detail.clone()
@@ -80,7 +90,7 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
         }
         .into(),
     );
-    ui.set_has_error(!state.error.is_empty());
+    ui.set_has_error(main_error);
     ui.set_progress(state.percent.min(100) as i32);
     ui.set_action_text(
         if main_busy {
@@ -504,6 +514,7 @@ mod tests {
     fn native_view_reflects_real_update_failure_and_ready_states() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = App::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(400.0, 420.0));
         let mut state = UiState::default();
         state.begin(Job::Update);
         render_at(&ui, &state, Duration::from_millis(300));
@@ -522,8 +533,14 @@ mod tests {
             0,
             "busy actions must ignore accessibility activation"
         );
+        let update_position = find("检查更新").absolute_position();
         state.finish(Outcome::Failed("SHA256 mismatch".into()));
         render(&ui, &state);
+        assert_eq!(
+            find("检查更新").absolute_position(),
+            update_position,
+            "failure details must not move the existing action"
+        );
         assert_eq!(ui.get_action_text(), "重试更新");
         assert!(ui.get_detail().contains("SHA256 mismatch"));
         state.begin(Job::Update);
@@ -549,6 +566,26 @@ mod tests {
         assert_eq!(find("启动 PCL").absolute_position(), launch_position);
         assert_eq!(find("Discord 代理开关").absolute_position(), proxy_position);
         state.finish(Outcome::ProxyStarted);
+        render(&ui, &state);
+        let check_position = find("检查更新").absolute_position();
+        state.begin(Job::ProxyStop);
+        state.finish(Outcome::ProxyStopped);
+        state.begin(Job::ProxyStart);
+        state.finish(Outcome::Failed("HTTP 503: subscription unavailable".into()));
+        render(&ui, &state);
+        assert!(ui.get_proxy_error());
+        assert!(
+            !ui.get_has_error(),
+            "proxy errors must not insert a primary-area error action"
+        );
+        assert!(
+            ui.get_detail().is_empty(),
+            "proxy errors stay beside the proxy switch"
+        );
+        assert_eq!(find("检查更新").absolute_position(), check_position);
+        find("代理错误详情");
+        state.begin(Job::Update);
+        state.finish(Outcome::Updated(true));
         render(&ui, &state);
         find("启动 PCL").invoke_accessible_default_action();
         assert_eq!(clicks.get(), 1);
@@ -598,7 +635,7 @@ mod tests {
             ui.get_udp_enabled(),
             "failed save restores the persisted/default value"
         );
-        assert!(ui.get_has_error());
+        assert!(ui.get_settings_error().contains("settings write rejected"));
         assert!(
             execute(
                 tempfile::tempdir().unwrap().path(),
