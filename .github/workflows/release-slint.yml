@@ -1,0 +1,150 @@
+# Slint 0.5.0 release. Branch/manual runs never publish.
+# Later native promotion must preserve the two original entry documents.
+name: Build Slint updater
+
+on:
+  push:
+    tags: ['v0.5.0']
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      publish: ${{ steps.context.outputs.publish }}
+    env:
+      UPMC_BUILD_ID: ${{ github.sha }}
+      UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
+    steps:
+      - name: Check out the exact source and tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test publication behavior without remote mutations
+        run: python -m unittest discover -s scripts/tests -v
+
+      - name: Resolve publication boundary
+        id: context
+        shell: pwsh
+        run: python scripts/release_publication.py ci-context >> $env:GITHUB_OUTPUT
+
+      - name: Validate the transition source before building
+        if: steps.context.outputs.publish == 'true'
+        shell: pwsh
+        run: >-
+          python scripts/release_publication.py validate-source
+          --source . --tag "$env:GITHUB_REF_NAME" --build-id "$env:GITHUB_SHA"
+          --ref "$env:GITHUB_REF" --channel stable
+
+      - name: Install the validated Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache locked Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          cache-on-failure: true
+          shared-key: slint-050-windows-2022-rust-1.95.0
+
+      - name: Build the matching embedded proxy DLL pair
+        run: cargo build --locked --release -p discord-proxy-dll -p force-proxy-dll
+
+      - name: Test the legacy workspace
+        run: cargo test --locked --workspace
+
+      - name: Build the updater with both source DLLs embedded
+        env:
+          UPMC_SUB_URL: ${{ secrets.UPMC_SUB_URL }}
+        run: cargo build --locked --release -p upmc
+
+      - name: Prepare the release executable
+        if: steps.context.outputs.publish == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path _artifacts | Out-Null
+          Copy-Item -LiteralPath target/release/upmc.exe -Destination _artifacts/updater.exe
+
+      - name: Apply optional Authenticode signing before recording artifact bytes
+        if: steps.context.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_CERT_BASE64: ${{ secrets.WINDOWS_SIGN_CERT_BASE64 }}
+          WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGN_CERT_PASSWORD }}
+        run: ./scripts/sign-updater.ps1 -FilePath _artifacts/updater.exe
+
+      - name: Upload the actual final executable
+        if: steps.context.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: slint-updater-${{ github.sha }}
+          path: _artifacts/updater.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: >-
+      needs.build.outputs.publish == 'true' && github.event_name == 'push' &&
+      github.ref == 'refs/tags/v0.5.0' && github.repository == 'chenjicheng/upmc'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pages: write
+    concurrency:
+      group: upmc-pages-publication
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the exact publication code and source tag
+        uses: actions/checkout@v4
+        with:
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out existing Pages without initialization or fallback
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: pages
+          fetch-depth: 1
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download this run's actual final executable
+        uses: actions/download-artifact@v4
+        with:
+          name: slint-updater-${{ github.sha }}
+          path: _artifacts
+
+      - name: Verify the immutable Release and atomically publish bridge descriptors
+        shell: bash
+        run: |
+          git -C pages config user.name 'github-actions[bot]'
+          git -C pages config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          expected_head="$(git -C pages rev-parse HEAD)"
+          python source/scripts/release_publication.py publish \
+            --source source --tag "$GITHUB_REF_NAME" --build-id "$GITHUB_SHA" \
+            --ref "$GITHUB_REF" --channel stable --artifact _artifacts/updater.exe \
+            --pages pages --expected-pages-head "$expected_head"
+
+      # GITHUB_TOKEN pushes do not automatically trigger a Pages build.
+      - name: Request a build of the configured Pages source
+        run: gh api --hostname github.com --method POST repos/chenjicheng/upmc/pages/builds
