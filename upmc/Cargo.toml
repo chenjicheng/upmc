@@ -35,7 +35,7 @@ discord-voice-proxy = { path = "../discord-voice-proxy" }
 
 # Windows 专用: 隐藏控制台窗口、设置 exe 属性
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "winbase", "wincon", "winnt", "winuser"] }
+winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "winbase", "wincon", "winnt", "winuser", "processthreadsapi", "tlhelp32", "synchapi"] }
 
 [build-dependencies]
 # 嵌入 exe 图标和版本信息

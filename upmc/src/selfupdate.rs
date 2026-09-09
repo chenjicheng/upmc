@@ -1200,23 +1200,32 @@ fn startup_health_ack_from(args: &[String], executable: &Path) -> Result<Option<
 /// the self-update protocol.
 pub fn acknowledge_health_when_window_ready(ack: StartupHealthAck) {
     thread::spawn(move || {
-        acknowledge_health_when_window_ready_with(
-            &ack,
-            HEALTH_CHECK_ATTEMPTS,
-            HEALTH_CHECK_INTERVAL,
-            process_has_visible_window,
-            thread::sleep,
-        )
+        let acknowledge = || {
+            acknowledge_health_when_window_ready_with(
+                &ack,
+                HEALTH_CHECK_ATTEMPTS,
+                HEALTH_CHECK_INTERVAL,
+                process_has_visible_window,
+                thread::sleep,
+            )
+        };
+        #[cfg(windows)]
+        legacy_cleanup::after_ack(
+            legacy_cleanup::ParentProof::capture(),
+            acknowledge,
+            legacy_cleanup::ParentProof::finish,
+        );
+        #[cfg(not(windows))]
+        acknowledge();
     });
 }
-
 fn acknowledge_health_when_window_ready_with(
     ack: &StartupHealthAck,
     attempts: usize,
     delay: Duration,
     mut visible_window: impl FnMut() -> Result<bool>,
     mut sleep: impl FnMut(Duration),
-) {
+) -> bool {
     for attempt in 0..attempts {
         let visible = match visible_window() {
             Ok(visible) => visible,
@@ -1229,7 +1238,7 @@ fn acknowledge_health_when_window_ready_with(
                     "helper rejects unacknowledged candidate",
                     ack.path.display(),
                 );
-                return;
+                return false;
             }
         };
         if visible {
@@ -1242,8 +1251,9 @@ fn acknowledge_health_when_window_ready_with(
                     "helper retains backup and rejects unacknowledged candidate",
                     ack.path.display(),
                 );
+                return false;
             }
-            return;
+            return true;
         }
         if attempt + 1 < attempts {
             sleep(delay);
@@ -1257,6 +1267,7 @@ fn acknowledge_health_when_window_ready_with(
         "helper rejects unacknowledged candidate",
         ack.path.display(),
     );
+    false
 }
 
 fn validate_health_ack_path(path: &Path, executable: &Path) -> Result<PathBuf> {
@@ -3289,3 +3300,6 @@ fn bridge_retry_with<T>(
 #[cfg(test)]
 #[path = "selfupdate_transfer_tests.rs"]
 mod transfer_tests;
+
+#[cfg(windows)]
+mod legacy_cleanup;
