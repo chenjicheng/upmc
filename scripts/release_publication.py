@@ -1,4 +1,4 @@
-"""Promote the Slint 0.5.0 release without changing frozen legacy entrypoints.
+"""Promote the Slint 0.5.1 release without changing frozen legacy entrypoints.
 
 The CLI is deliberately a single operation: no external hash, size, descriptor,
 repository, version or download URL can be supplied to the publisher.
@@ -15,12 +15,12 @@ import tempfile
 import tomllib
 
 REPOSITORY = "chenjicheng/upmc"
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 TAG = "v" + VERSION
 DOWNLOAD_URL = f"https://github.com/{REPOSITORY}/releases/download/{TAG}/updater.exe"
 PROXY_PREFIX = "https://gh.chenjicheng.cn/"
 PATHS = ("bridge/version.json", "bridge/dev/version.json")
-MARKER = ".upmc-release-0.5.0.json"
+MARKER = ".upmc-release-0.5.1.json"
 FIELDS = {"version", "build_id", "download_url", "sha256", "size"}
 
 
@@ -43,7 +43,7 @@ def _sha(value):
 
 def _identity(version, tag, build_id):
     _require(version == VERSION and tag == TAG,
-             "This publisher only accepts exact version 0.5.0 and tag v0.5.0")
+             "This publisher only accepts exact version 0.5.1 and tag v0.5.1")
     _require(_sha(build_id), "build_id must be a full lowercase 40-digit commit SHA")
 
 
@@ -52,7 +52,7 @@ def _validate_descriptor(descriptor):
              "Descriptor must contain exactly version, build_id, download_url, sha256 and size")
     _identity(descriptor["version"], TAG, descriptor["build_id"])
     _require(descriptor["download_url"] in (DOWNLOAD_URL, PROXY_PREFIX + DOWNLOAD_URL),
-             "download_url must be the official v0.5.0 updater.exe HTTPS URL or its approved proxy")
+             "download_url must be the official v0.5.1 updater.exe HTTPS URL or its approved proxy")
     _require(isinstance(descriptor["sha256"], str)
              and re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is not None,
              "sha256 must contain 64 lowercase hex digits")
@@ -101,7 +101,7 @@ def validate_source(source, tag, build_id, ref, channel):
         raise PublicationError(f"Cannot read source package version: {error}") from error
     _identity(version, tag, build_id)
     _require(ref == "refs/tags/" + TAG and channel == "stable",
-             "Legacy publication requires the stable v0.5.0 tag; branches and dev are build-only")
+             "Legacy publication requires the stable v0.5.1 tag; branches and dev are build-only")
     _require(_git(source, "rev-parse", "HEAD") == build_id, "build_id differs from checked-out source commit")
     _require(_git(source, "rev-parse", f"refs/tags/{TAG}^{{commit}}") == build_id,
              "Release tag differs from checked-out source commit")
@@ -135,7 +135,7 @@ def _api(endpoint, allow_404=False):
 
 
 def lookup_release(tag):
-    _require(tag == TAG, "Only the v0.5.0 transition Release is allowed")
+    _require(tag == TAG, "Only the v0.5.1 transition Release is allowed")
     return _api(f"repos/{REPOSITORY}/releases/tags/{tag}", allow_404=True)
 
 
@@ -163,7 +163,7 @@ def ensure_release(artifact, version, tag, build_id):
         release = lookup_release(tag)
     _require(isinstance(release, dict), "Release is still unavailable after creation")
     _require(release.get("tag_name") == tag and release.get("draft") is False
-             and release.get("prerelease") is False, "Release must be the public stable v0.5.0 Release")
+             and release.get("prerelease") is False, "Release must be the public stable v0.5.1 Release")
     assets = release.get("assets")
     _require(isinstance(assets, list) and all(isinstance(asset, dict) for asset in assets),
              "Release assets must be a list of objects")

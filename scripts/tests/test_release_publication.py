@@ -20,24 +20,24 @@ class ReleaseTests(Fixtures):
         self.assertIn("tags: ['v0.4.8']", historical)
         self.assertIn('branches: [main, dev]', current)
     def new_descriptor(self):
-        return dict(self.descriptor(), version='0.5.0', download_url='https://github.com/chenjicheng/upmc/releases/download/v0.5.0/updater.exe')
+        return dict(self.descriptor(), version='0.5.1', download_url='https://github.com/chenjicheng/upmc/releases/download/v0.5.1/updater.exe')
 
     def test_exact_official_tag_only(self):
-        self.assertTrue(pub.publication_allowed('push', 'refs/tags/v0.5.0', 'chenjicheng/upmc'))
-        for event, ref, repo in [('workflow_dispatch','refs/tags/v0.5.0','chenjicheng/upmc'), ('push','refs/heads/main','chenjicheng/upmc'), ('push','refs/tags/v0.4.8','chenjicheng/upmc'), ('push','refs/tags/v0.5.0','other/upmc')]:
+        self.assertTrue(pub.publication_allowed('push', 'refs/tags/v0.5.1', 'chenjicheng/upmc'))
+        for event, ref, repo in [('workflow_dispatch','refs/tags/v0.5.1','chenjicheng/upmc'), ('push','refs/heads/main','chenjicheng/upmc'), ('push','refs/tags/v0.4.8','chenjicheng/upmc'), ('push','refs/tags/v0.5.1','other/upmc')]:
             self.assertFalse(pub.publication_allowed(event, ref, repo))
 
     def test_release_workflow_uses_new_publisher_and_exact_tag(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/release-slint.yml').read_text(encoding='utf-8')
-        self.assertIn("tags: ['v0.5.0']", workflow)
+        self.assertIn("tags: ['v0.5.1']", workflow)
         self.assertIn('release_publication.py publish', workflow)
-        self.assertIn("github.ref == 'refs/tags/v0.5.0'", workflow)
+        self.assertIn("github.ref == 'refs/tags/v0.5.1'", workflow)
         self.assertNotIn('slint/live-preview', workflow)
         self.assertNotIn('--clobber', workflow)
 
     def test_hash_and_size_come_from_artifact(self):
         expected = self.new_descriptor()
-        self.assertEqual(pub.make_descriptor(self.artifact, '0.5.0', 'v0.5.0', self.sha, expected['download_url']), expected)
+        self.assertEqual(pub.make_descriptor(self.artifact, '0.5.1', 'v0.5.1', self.sha, expected['download_url']), expected)
 
     def pages_fixture(self):
         pages = self.root / 'pages'; init_repo(pages)
@@ -54,7 +54,7 @@ class ReleaseTests(Fixtures):
         pages, remote, head = self.pages_fixture()
         result = pub.publish_pages(pages, self.new_descriptor(), head)
         changed = git(remote, 'diff-tree', '--no-commit-id', '--name-only', '-r', result).splitlines()
-        self.assertEqual(set(changed), {'bridge/version.json', 'bridge/dev/version.json', '.upmc-release-0.5.0.json'})
+        self.assertEqual(set(changed), {'bridge/version.json', 'bridge/dev/version.json', '.upmc-release-0.5.1.json'})
         for name in ('version.json', 'dev/version.json', '.upmc-legacy-transition.json', 'unrelated.txt'):
             self.assertEqual(git(remote, 'show', f'{result}:{name}'), git(pages, 'show', f'{head}:{name}'))
         self.assertEqual(git(pages, 'rev-parse', 'HEAD'), head)
@@ -71,12 +71,12 @@ class ReleaseTests(Fixtures):
 
     def test_http_failure_does_not_create_release(self):
         with patch.object(pub, '_verify_remote_tag'), patch.object(pub, 'lookup_release', side_effect=pub.PublicationError('HTTP 403')), patch.object(pub, '_run') as run:
-            with self.assertRaises(pub.PublicationError): pub.ensure_release(self.artifact, '0.5.0', 'v0.5.0', self.sha)
+            with self.assertRaises(pub.PublicationError): pub.ensure_release(self.artifact, '0.5.1', 'v0.5.1', self.sha)
             run.assert_not_called()
 
     def test_remote_release_contract_against_new_publisher(self):
         import test_legacy_publication as legacy
-        with patch.multiple(legacy, pub=pub, VERSION='0.5.0', TAG='v0.5.0', URL=pub.DOWNLOAD_URL):
+        with patch.multiple(legacy, pub=pub, VERSION='0.5.1', TAG='v0.5.1', URL=pub.DOWNLOAD_URL):
             result = unittest.TestResult()
             unittest.defaultTestLoader.loadTestsFromTestCase(legacy.ReleaseTests).run(result)
         self.assertEqual(result.testsRun, 6)
