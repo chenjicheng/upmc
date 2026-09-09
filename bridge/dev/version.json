@@ -1,7 +1,7 @@
 {
-  "build_id": "4bc0ee964d003eca846e5396ef105b81ca7e41e0",
-  "download_url": "https://github.com/chenjicheng/upmc/releases/download/v0.5.1/updater.exe",
-  "sha256": "adeec8c229f07e8699bbd159623524f3407097b48ca57d61ec0383edfc738d46",
-  "size": 14828544,
-  "version": "0.5.1"
+  "build_id": "c63af26ee326f9f6710701aa7060a477e581f19c",
+  "download_url": "https://github.com/chenjicheng/upmc/releases/download/v0.5.2/updater.exe",
+  "sha256": "6241ed79255a2da82b221dc1d30b60be8282848e112eb4e7d1851b5365bf1749",
+  "size": 16734720,
+  "version": "0.5.2"
 }
