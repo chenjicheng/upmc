@@ -1,4 +1,4 @@
-"""Promote the Slint 0.5.3 release without changing frozen legacy entrypoints.
+"""Promote the manifest-selected release without changing frozen legacy entrypoints.
 
 The CLI is deliberately a single operation: no external hash, size, descriptor,
 repository, version or download URL can be supplied to the publisher.
@@ -15,14 +15,8 @@ import tempfile
 import tomllib
 
 REPOSITORY = "chenjicheng/upmc"
-VERSION = "0.5.3"
-TAG = "v" + VERSION
-DOWNLOAD_URL = f"https://github.com/{REPOSITORY}/releases/download/{TAG}/updater.exe"
 PROXY_PREFIX = "https://gh.chenjicheng.cn/"
 PATHS = ("bridge/version.json", "bridge/dev/version.json")
-MARKER = ".upmc-release-0.5.3.json"
-PREDECESSOR_VERSION = "0.5.2"
-PREDECESSOR_MARKER = ".upmc-release-0.5.2.json"
 FIELDS = {"version", "build_id", "download_url", "sha256", "size"}
 
 
@@ -30,13 +24,45 @@ class PublicationError(RuntimeError):
     pass
 
 
-def publication_allowed(event_name, ref, repository):
-    return event_name == "push" and ref == "refs/tags/" + TAG and repository == REPOSITORY
+def publication_allowed(event_name, ref, repository, channel="stable"):
+    return (event_name == "push" and ref == "refs/tags/" + TAG
+            and repository == REPOSITORY and channel == "stable")
 
 
 def _require(condition, message):
     if not condition:
         raise PublicationError(message)
+
+
+def _stable_version(value, label):
+    _require(isinstance(value, str) and re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value),
+             f"{label} must be an exact stable major.minor.patch version")
+    # Length then lexical comparison is numeric for components without leading
+    # zeroes, including arbitrarily large valid SemVer components.
+    return tuple((len(part), part) for part in value.split("."))
+
+
+def _release_policy(manifest):
+    try:
+        with Path(manifest).open("rb") as stream:
+            package = tomllib.load(stream)["package"]
+        current = package["version"]
+        predecessor = package["metadata"]["upmc-release"]["predecessor"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise PublicationError(f"Cannot read release policy from {manifest}: {error}") from error
+    current_order = _stable_version(current, "package.version")
+    predecessor_order = _stable_version(predecessor, "release predecessor")
+    _require(predecessor_order < current_order, "Release predecessor must be older than package.version")
+    return current, predecessor
+
+
+# Read policy only from the manifest beside this checked-out publisher, never
+# environment variables, CLI version overrides, or working-directory discovery.
+VERSION, PREDECESSOR_VERSION = _release_policy(Path(__file__).resolve().parents[1] / "upmc/Cargo.toml")
+TAG = "v" + VERSION
+DOWNLOAD_URL = f"https://github.com/{REPOSITORY}/releases/download/{TAG}/updater.exe"
+MARKER = f".upmc-release-{VERSION}.json"
+PREDECESSOR_MARKER = f".upmc-release-{PREDECESSOR_VERSION}.json"
 
 
 def _sha(value):
@@ -45,7 +71,7 @@ def _sha(value):
 
 def _identity(version, tag, build_id):
     _require(version == VERSION and tag == TAG,
-             "This publisher only accepts exact version 0.5.3 and tag v0.5.3")
+             f"This publisher only accepts exact version {VERSION} and tag {TAG}")
     _require(_sha(build_id), "build_id must be a full lowercase 40-digit commit SHA")
 
 
@@ -98,14 +124,12 @@ def make_descriptor(artifact, version, tag, build_id, download_url):
 
 
 def validate_source(source, tag, build_id, ref, channel):
-    try:
-        with (Path(source) / "upmc/Cargo.toml").open("rb") as stream:
-            version = tomllib.load(stream)["package"]["version"]
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise PublicationError(f"Cannot read source package version: {error}") from error
+    version, predecessor = _release_policy(Path(source) / "upmc/Cargo.toml")
+    _require((version, predecessor) == (VERSION, PREDECESSOR_VERSION),
+             "Source release policy differs from the publisher checkout")
     _identity(version, tag, build_id)
     _require(ref == "refs/tags/" + TAG and channel == "stable",
-             "Legacy publication requires the stable v0.5.3 tag; branches and dev are build-only")
+             f"Legacy publication requires the stable {TAG} tag; branches and dev are build-only")
     _require(_git(source, "rev-parse", "HEAD") == build_id, "build_id differs from checked-out source commit")
     _require(_git(source, "rev-parse", f"refs/tags/{TAG}^{{commit}}") == build_id,
              "Release tag differs from checked-out source commit")
@@ -139,7 +163,7 @@ def _api(endpoint, allow_404=False):
 
 
 def lookup_release(tag):
-    _require(tag == TAG, "Only the v0.5.3 transition Release is allowed")
+    _require(tag == TAG, f"Only the {TAG} transition Release is allowed")
     return _api(f"repos/{REPOSITORY}/releases/tags/{tag}", allow_404=True)
 
 
@@ -167,7 +191,7 @@ def ensure_release(artifact, version, tag, build_id):
         release = lookup_release(tag)
     _require(isinstance(release, dict), "Release is still unavailable after creation")
     _require(release.get("tag_name") == tag and release.get("draft") is False
-             and release.get("prerelease") is False, "Release must be the public stable v0.5.3 Release")
+             and release.get("prerelease") is False, f"Release must be the public stable {TAG} Release")
     assets = release.get("assets")
     _require(isinstance(assets, list) and all(isinstance(asset, dict) for asset in assets),
              "Release assets must be a list of objects")
@@ -260,7 +284,7 @@ def publish_pages(pages, descriptor, expected_head):
              "Bridge feeds disagree; refusing an inconsistent promotion")
     existing = existing_feeds[0]
     if existing != frozen:
-        _require(PREDECESSOR_MARKER in entries, "Validated 0.5.2 release marker is required")
+        _require(PREDECESSOR_MARKER in entries, f"Validated {PREDECESSOR_VERSION} release marker is required")
         predecessor = _json_page(pages, entries, PREDECESSOR_MARKER)
         _validate_descriptor(predecessor, PREDECESSOR_VERSION)
         _require(existing == predecessor,
@@ -302,8 +326,9 @@ def main():
     args = parser.parse_args()
     if args.command == "ci-context":
         allowed = publication_allowed(os.getenv("GITHUB_EVENT_NAME"), os.getenv("GITHUB_REF"),
-                                      os.getenv("GITHUB_REPOSITORY"))
+                                      os.getenv("GITHUB_REPOSITORY"), os.getenv("UPMC_CHANNEL"))
         print("publish=" + str(allowed).lower())
+        print("release_tag=" + TAG)
         return 0
     try:
         version = validate_source(args.source, args.tag, args.build_id, args.ref, args.channel)

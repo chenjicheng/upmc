@@ -159,7 +159,7 @@ class ReleaseTests(Fixtures):
                 pub.make_descriptor(self.artifact, version, tag, self.sha, url)
 
     def test_current_source_tag_commit_and_stable_channel_are_required(self):
-        (self.source / 'upmc/Cargo.toml').write_text('[package]\nname = "fixture"\nversion = "0.5.3"\n')
+        (self.source / 'upmc/Cargo.toml').write_text('[package]\nname = "fixture"\nversion = "0.5.3"\n[package.metadata.upmc-release]\npredecessor = "0.5.2"\n')
         git(self.source, 'add', '.'); git(self.source, 'commit', '-m', 'current release')
         current = git(self.source, 'rev-parse', 'HEAD')
         git(self.source, 'tag', 'v0.5.3')
@@ -170,6 +170,13 @@ class ReleaseTests(Fixtures):
                                        ('v0.5.3', current, 'refs/tags/v0.5.3', 'dev')]:
             with self.subTest(tag=tag, sha=sha, ref=ref, channel=channel), self.assertRaises(pub.PublicationError):
                 pub.validate_source(self.source, tag, sha, ref, channel)
+    def test_source_predecessor_policy_must_match_the_publisher_checkout(self):
+        (self.source / 'upmc/Cargo.toml').write_text('[package]\nversion = "0.5.3"\n[package.metadata.upmc-release]\npredecessor = "0.5.1"\n')
+        git(self.source, 'add', '.'); git(self.source, 'commit', '-m', 'different policy')
+        current = git(self.source, 'rev-parse', 'HEAD')
+        git(self.source, 'tag', 'v0.5.3')
+        with self.assertRaises(pub.PublicationError):
+            pub.validate_source(self.source, 'v0.5.3', current, 'refs/tags/v0.5.3', 'stable')
     def test_historical_workflow_does_not_duplicate_branch_builds(self):
         root = Path(__file__).resolve().parents[2]
         historical = (root / '.github/workflows/build-updater.yml').read_text(encoding='utf-8')
@@ -187,9 +194,11 @@ class ReleaseTests(Fixtures):
 
     def test_release_workflow_uses_new_publisher_and_exact_tag(self):
         workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/release-slint.yml').read_text(encoding='utf-8')
-        self.assertIn("tags: ['v0.5.3']", workflow)
+        self.assertIn("tags: ['v*']", workflow)
         self.assertIn('release_publication.py publish', workflow)
-        self.assertIn("github.ref == 'refs/tags/v0.5.3'", workflow)
+        self.assertIn("github.ref == format('refs/tags/{0}', needs.build.outputs.release_tag)", workflow)
+        self.assertIn('release_tag: ${{ steps.context.outputs.release_tag }}', workflow)
+        self.assertIn("needs.build.outputs.publish == 'true'", workflow)
         self.assertNotIn('slint/live-preview', workflow)
         self.assertNotIn('--clobber', workflow)
 
