@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 /// Get the root Discord directory (`%LocalAppData%/Discord`).
 pub fn get_root_dir() -> Result<PathBuf> {
@@ -48,10 +48,48 @@ pub fn is_installed() -> bool {
 
 /// Kill all running Discord processes.
 pub fn kill() -> Result<()> {
-    let _ = std::process::Command::new("taskkill")
-        .args(["/f", "/im", "Discord.exe"])
-        .output();
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    kill_with(|program, args| {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(program)
+            .args(args)
+            .creation_flags(0x08000000)
+            .output()
+    })
+}
+
+fn kill_with(
+    mut run: impl FnMut(&str, &[&str]) -> std::io::Result<std::process::Output>,
+) -> Result<()> {
+    let stopped = run("taskkill", &["/f", "/im", "Discord.exe"])
+        .context("Failed to execute Discord stop command")?;
+    let processes =
+        run("tasklist", &["/fo", "csv", "/nh"]).context("Failed to verify Discord termination")?;
+    anyhow::ensure!(
+        processes.status.success(),
+        "Failed to verify Discord termination: {}",
+        String::from_utf8_lossy(&processes.stderr)
+    );
+    let listing = String::from_utf8_lossy(&processes.stdout);
+    anyhow::ensure!(
+        !listing.trim().is_empty(),
+        "Empty process listing while verifying Discord termination"
+    );
+    let still_running = listing.lines().any(|line| {
+        line.split(',')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .eq_ignore_ascii_case("Discord.exe")
+    });
+    anyhow::ensure!(
+        !still_running,
+        "Discord is still running after stop ({}): {}",
+        stopped.status,
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    // A failed taskkill may mean Discord was already closed. A successful
+    // process snapshot proving absence is the authoritative postcondition.
     Ok(())
 }
 
@@ -109,11 +147,46 @@ fn list_process_names() -> Vec<String> {
         .filter_map(|line| {
             let name = line.split(',').next()?;
             let name = name.trim_matches('"').trim();
-            Some(
-                name.strip_suffix(".exe")
-                    .unwrap_or(name)
-                    .to_lowercase(),
-            )
+            Some(name.strip_suffix(".exe").unwrap_or(name).to_lowercase())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    fn output(code: u32, stdout: &str) -> std::process::Output {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: b"fixture diagnostic".to_vec(),
+        }
+    }
+    #[test]
+    fn stop_must_prove_discord_absent_and_report_command_failures() {
+        assert!(kill_with(|_, _| Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied"
+        )))
+        .is_err());
+        assert!(kill_with(|program, _| Ok(if program == "taskkill" {
+            output(1, "")
+        } else {
+            output(0, "\"Discord.exe\",\"123\"")
+        }))
+        .is_err());
+        assert!(kill_with(|program, _| Ok(if program == "taskkill" {
+            output(0, "")
+        } else {
+            output(1, "")
+        }))
+        .is_err());
+        assert!(kill_with(|program, _| Ok(if program == "taskkill" {
+            output(128, "")
+        } else {
+            output(0, "\"explorer.exe\",\"123\"")
+        }))
+        .is_ok());
+    }
 }
