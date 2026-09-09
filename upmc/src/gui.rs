@@ -79,7 +79,7 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
     ui.set_settings_error(
         if matches!(
             state.error_job(),
-            Some(Job::UdpSettings | Job::ChannelSettings)
+            Some(Job::UdpSettings | Job::ChannelSettings | Job::WindowSettings)
         ) {
             state.error.clone().into()
         } else {
@@ -122,6 +122,7 @@ enum Request {
     Proxy(bool),
     Udp(bool),
     Channel(UpdateChannel),
+    HideAfterLaunch(bool),
     Launch,
 }
 impl Request {
@@ -132,6 +133,7 @@ impl Request {
             Self::Proxy(false) => Job::ProxyStop,
             Self::Udp(_) => Job::UdpSettings,
             Self::Channel(_) => Job::ChannelSettings,
+            Self::HideAfterLaunch(_) => Job::WindowSettings,
             Self::Launch => Job::Launch,
         }
     }
@@ -146,6 +148,8 @@ struct Controller {
     base: PathBuf,
     channel: RefCell<ChannelConfig>,
     udp: Cell<bool>,
+    hide_after_launch: Cell<bool>,
+    hide_window: Box<dyn Fn(&App) -> Result<()>>,
     state: RefCell<UiState>,
     log: RefCell<Vec<String>>,
     switches: RefCell<SwitchQueue>,
@@ -176,6 +180,7 @@ impl Controller {
             self.start(match change.control {
                 Control::Proxy => Request::Proxy(change.enabled),
                 Control::Udp => Request::Udp(change.enabled),
+                Control::HideAfterLaunch => Request::HideAfterLaunch(change.enabled),
                 Control::Channel => Request::Channel(if change.enabled {
                     UpdateChannel::Dev
                 } else {
@@ -190,6 +195,9 @@ impl Controller {
         ui.set_proxy_on(proxy);
         ui.set_proxy_text(if proxy { "已启用" } else { "未启用" }.into());
         ui.set_udp_enabled(switches.value(Control::Udp, self.udp.get()));
+        ui.set_hide_after_launch(
+            switches.value(Control::HideAfterLaunch, self.hide_after_launch.get()),
+        );
         ui.set_dev_channel(switches.value(
             Control::Channel,
             self.channel.borrow().channel == UpdateChannel::Dev,
@@ -203,6 +211,7 @@ impl Controller {
             Some(Job::ProxyStop) => "停用 Discord 代理",
             Some(Job::UdpSettings) => "保存 UDP 设置",
             Some(Job::ChannelSettings) => "保存更新通道",
+            Some(Job::WindowSettings) => "保存窗口行为",
             Some(Job::Launch) => "启动 PCL",
             None => "界面操作",
         };
@@ -300,6 +309,7 @@ impl Controller {
                 self.repaint();
             }
             Event::Finished(outcome) => {
+                let launched = matches!(outcome, Outcome::Launched);
                 if matches!(outcome, Outcome::Saved)
                     && let Some(change) = self.switches.borrow().active()
                 {
@@ -312,6 +322,7 @@ impl Controller {
                             }
                         }
                         Control::Udp => self.udp.set(change.enabled),
+                        Control::HideAfterLaunch => self.hide_after_launch.set(change.enabled),
                         Control::Proxy => {}
                     }
                 }
@@ -323,6 +334,16 @@ impl Controller {
                 self.switches.borrow_mut().complete(success);
                 self.start_queued();
                 self.refresh();
+                if launched && self.hide_after_launch.get() {
+                    if let Some(ui) = self.ui.upgrade() {
+                        if let Err(error) = (self.hide_window)(&ui) {
+                            let message = format!("隐藏窗口失败：{error:#}");
+                            self.record_error(message.clone());
+                            self.state.borrow_mut().launch_window_error(message);
+                            self.refresh();
+                        }
+                    }
+                }
                 if self.state.borrow().exit {
                     let _ = slint::quit_event_loop();
                 }
@@ -345,6 +366,29 @@ impl Controller {
         } else {
             true
         }
+    }
+    fn restore_window(&self, show: impl FnOnce(&App) -> Result<()>) {
+        use slint::winit_030::WinitWindowAccessor;
+        if let Some(ui) = self.ui.upgrade() {
+            if let Err(error) = show(&ui) {
+                let message = format!("恢复窗口失败：{error:#}");
+                self.record_error(message.clone());
+                self.state.borrow_mut().launch_window_error(message);
+                self.refresh();
+                return;
+            }
+            ui.window().set_minimized(false);
+            ui.window()
+                .with_winit_window(|window| window.focus_window());
+        }
+    }
+}
+fn native_close(controller: &Controller, quit: impl FnOnce()) -> slint::CloseRequestResponse {
+    if controller.request_close() {
+        quit();
+        slint::CloseRequestResponse::HideWindow
+    } else {
+        slint::CloseRequestResponse::KeepWindowShown
     }
 }
 fn execute(
@@ -373,6 +417,12 @@ fn execute(
         }
         Request::Channel(value) => {
             config::save_channel_config(base, &ChannelConfig { channel: value })?;
+            Outcome::Saved
+        }
+        Request::HideAfterLaunch(value) => {
+            let mut settings = config::load_user_settings(base);
+            settings.hide_after_launch = value;
+            config::save_user_settings(base, &settings).context("保存窗口行为失败")?;
             Outcome::Saved
         }
         Request::Launch => {
@@ -404,12 +454,28 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
     ui.set_pack_name(config::INSTALL_DIR_NAME.into());
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     let (sender, receiver) = mpsc::sync_channel(64);
-    let initial_udp = config::load_user_settings(&base).proxy_udp;
+    let initial_settings = config::load_user_settings(&base);
+    let tray = Rc::new(RefCell::new(None));
+    let hide_tray = tray.clone();
     let controller = Rc::new(Controller {
         ui: ui.as_weak(),
         base,
         channel: RefCell::new(channel),
-        udp: Cell::new(initial_udp),
+        udp: Cell::new(initial_settings.proxy_udp),
+        hide_after_launch: Cell::new(initial_settings.hide_after_launch),
+        hide_window: Box::new(move |ui| {
+            if hide_tray.borrow().is_none() {
+                let icon = tray_icon::Icon::from_resource(1, Some((32, 32)))?;
+                *hide_tray.borrow_mut() = Some(
+                    tray_icon::TrayIconBuilder::new()
+                        .with_icon(icon)
+                        .with_tooltip("UPMC · 点击显示窗口")
+                        .build()?,
+                );
+            }
+            ui.hide()?;
+            Ok(())
+        }),
         state: RefCell::new(UiState::default()),
         log: RefCell::new(Vec::new()),
         switches: RefCell::new(SwitchQueue::default()),
@@ -441,6 +507,8 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
     let c = controller.clone();
     ui.on_udp_change(move |value| c.submit_switch(Control::Udp, value));
     let c = controller.clone();
+    ui.on_hide_after_launch_change(move |value| c.submit_switch(Control::HideAfterLaunch, value));
+    let c = controller.clone();
     ui.on_channel_change(move |value| {
         c.submit_switch(Control::Channel, value);
     });
@@ -452,11 +520,9 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
     });
     let c = controller.clone();
     ui.window().on_close_requested(move || {
-        if c.request_close() {
-            slint::CloseRequestResponse::HideWindow
-        } else {
-            slint::CloseRequestResponse::KeepWindowShown
-        }
+        native_close(&c, || {
+            let _ = slint::quit_event_loop();
+        })
     });
     let weak = ui.as_weak();
     ui.on_minimize_window(move || {
@@ -519,6 +585,18 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
         slint::TimerMode::Repeated,
         Duration::from_millis(60),
         move || {
+            for event in tray_icon::TrayIconEvent::receiver().try_iter().take(16) {
+                if matches!(
+                    event,
+                    tray_icon::TrayIconEvent::Click {
+                        button: tray_icon::MouseButton::Left,
+                        button_state: tray_icon::MouseButtonState::Up,
+                        ..
+                    }
+                ) {
+                    c.restore_window(|ui| ui.show().map_err(Into::into));
+                }
+            }
             for event in receiver.try_iter().take(128) {
                 c.event(event);
             }
@@ -528,7 +606,8 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
         },
     );
     controller.start(Request::Update);
-    ui.run()?;
+    ui.show()?;
+    slint::run_event_loop_until_quit()?;
     Ok(())
 }
 
@@ -536,6 +615,133 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
 mod tests {
     use super::*;
     use crate::gui_state::{Job, Outcome};
+    fn launch_controller(ui: &App, base: &Path, sender: SyncSender<Event>) -> Controller {
+        Controller {
+            ui: ui.as_weak(),
+            base: base.to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(true),
+            hide_after_launch: Cell::new(false),
+            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: execute,
+        }
+    }
+    #[test]
+    fn launch_visibility_and_hide_failure_keep_updater_usable() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, _) = mpsc::sync_channel(64);
+        let mut c = launch_controller(&ui, temp.path(), sender);
+        let hides = Rc::new(Cell::new(0));
+        let calls = hides.clone();
+        c.hide_window = Box::new(move |_| {
+            calls.set(calls.get() + 1);
+            Ok(())
+        });
+        c.state.borrow_mut().ready = true;
+        c.state.borrow_mut().begin(Job::Launch);
+        c.event(Event::Finished(Outcome::Launched));
+        assert_eq!(hides.get(), 0);
+        assert!(!c.state.borrow().exit);
+        c.hide_after_launch.set(true);
+        c.state.borrow_mut().begin(Job::Launch);
+        c.event(Event::Finished(Outcome::Failed("spawn denied".into())));
+        assert_eq!(hides.get(), 0);
+        c.state.borrow_mut().begin(Job::Launch);
+        c.event(Event::Finished(Outcome::Launched));
+        assert_eq!(hides.get(), 1);
+        c.hide_window = Box::new(|_| anyhow::bail!("tray creation denied"));
+        c.state.borrow_mut().begin(Job::Launch);
+        c.event(Event::Finished(Outcome::Launched));
+        assert!(c.state.borrow().ready);
+        assert!(!c.state.borrow().exit);
+        assert!(ui.get_has_error());
+        assert!(
+            c.errors
+                .borrow()
+                .last()
+                .unwrap()
+                .contains("tray creation denied")
+        );
+        assert!(c.request_close());
+    }
+    #[test]
+    fn launch_setting_is_optimistic_serial_and_rolls_back_storage_failure() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let c = launch_controller(&ui, temp.path(), sender);
+        c.submit_switch(Control::HideAfterLaunch, true);
+        assert!(ui.get_hide_after_launch());
+        c.submit_switch(Control::HideAfterLaunch, false);
+        assert!(!ui.get_hide_after_launch());
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(!ui.get_hide_after_launch());
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(!config::load_user_settings(temp.path()).hide_after_launch);
+        std::fs::remove_file(temp.path().join(config::USER_SETTINGS_FILE)).unwrap();
+        std::fs::create_dir(temp.path().join(config::USER_SETTINGS_FILE)).unwrap();
+        c.submit_switch(Control::HideAfterLaunch, true);
+        assert!(ui.get_hide_after_launch());
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(!ui.get_hide_after_launch());
+        assert!(
+            c.errors
+                .borrow()
+                .last()
+                .unwrap()
+                .contains("保存窗口行为失败")
+        );
+    }
+    #[test]
+    fn native_close_quits_persistent_event_loop_only_when_idle() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, _) = mpsc::sync_channel(64);
+        let c = launch_controller(&ui, temp.path(), sender);
+        let quits = Cell::new(0);
+        native_close(&c, || quits.set(quits.get() + 1));
+        assert_eq!(
+            quits.get(),
+            1,
+            "native close must quit while hide-to-tray keeps the loop alive"
+        );
+        c.state.borrow_mut().begin(Job::Update);
+        native_close(&c, || quits.set(quits.get() + 1));
+        assert_eq!(quits.get(), 1, "busy close must leave the job running");
+    }
+    #[test]
+    fn tray_restore_failure_is_visible_in_shared_error_surface_and_retry_works() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, _) = mpsc::sync_channel(64);
+        let c = launch_controller(&ui, temp.path(), sender);
+        c.restore_window(|_| anyhow::bail!("window unavailable"));
+        assert!(
+            ui.get_has_error(),
+            "restoration failure needs an error details affordance"
+        );
+        assert!(
+            c.errors
+                .borrow()
+                .last()
+                .unwrap()
+                .contains("window unavailable")
+        );
+        c.restore_window(|ui| ui.show().map_err(Into::into));
+        assert!(ui.window().is_visible());
+        assert!(!c.state.borrow().exit);
+    }
     #[test]
     fn another_setting_does_not_hide_a_failed_setting() {
         i_slint_backend_testing::init_no_event_loop();
@@ -564,6 +770,8 @@ mod tests {
             base: temp.path().to_owned(),
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(true),
+            hide_after_launch: Cell::new(false),
+            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),
@@ -595,6 +803,8 @@ mod tests {
             base: temp.path().to_owned(),
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(false),
+            hide_after_launch: Cell::new(false),
+            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),
@@ -660,6 +870,8 @@ mod tests {
             base: temp.path().to_owned(),
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(true),
+            hide_after_launch: Cell::new(false),
+            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),
@@ -767,6 +979,7 @@ mod tests {
             &config::UserSettings {
                 proxy_udp: true,
                 proxy_enabled: false,
+                ..config::UserSettings::default()
             },
         )
         .unwrap();
@@ -881,6 +1094,7 @@ mod tests {
             &config::UserSettings {
                 proxy_udp: true,
                 proxy_enabled: false,
+                ..config::UserSettings::default()
             },
         )
         .unwrap();
@@ -890,6 +1104,8 @@ mod tests {
             base: temp.path().to_owned(),
             channel: RefCell::new(ChannelConfig::default()),
             udp: Cell::new(true),
+            hide_after_launch: Cell::new(false),
+            hide_window: Box::new(|ui| ui.hide().map_err(Into::into)),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
             switches: RefCell::new(SwitchQueue::default()),

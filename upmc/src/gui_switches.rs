@@ -4,6 +4,7 @@ pub enum Control {
     Proxy,
     Udp,
     Channel,
+    HideAfterLaunch,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Change {
@@ -14,7 +15,7 @@ pub struct Change {
 pub struct SwitchQueue {
     pending: std::collections::VecDeque<Change>,
     active: Option<Change>,
-    desired: [Option<bool>; 3],
+    desired: [Option<bool>; 4],
 }
 impl SwitchQueue {
     pub fn active(&self) -> Option<Change> {

@@ -302,6 +302,7 @@ pub struct UserSettings {
     /// 是否代理 Discord UDP 语音流量。新安装和旧版升级默认开启。
     pub proxy_udp: bool,
     pub proxy_enabled: bool,
+    pub hide_after_launch: bool,
 }
 
 /// Revision zero predates the UDP-on policy. Once saved, revision one preserves
@@ -314,6 +315,8 @@ struct StoredUserSettings {
     proxy_udp: bool,
     #[serde(default = "proxy_enabled_by_default")]
     proxy_enabled: bool,
+    #[serde(default)]
+    hide_after_launch: bool,
 }
 
 impl From<StoredUserSettings> for UserSettings {
@@ -321,6 +324,7 @@ impl From<StoredUserSettings> for UserSettings {
         Self {
             proxy_udp: stored.udp_policy_revision == 0 || stored.proxy_udp,
             proxy_enabled: stored.proxy_enabled,
+            hide_after_launch: stored.hide_after_launch,
         }
     }
 }
@@ -331,6 +335,7 @@ impl From<UserSettings> for StoredUserSettings {
             udp_policy_revision: 1,
             proxy_udp: settings.proxy_udp,
             proxy_enabled: settings.proxy_enabled,
+            hide_after_launch: settings.hide_after_launch,
         }
     }
 }
@@ -340,6 +345,7 @@ impl Default for UserSettings {
         Self {
             proxy_udp: true,
             proxy_enabled: true,
+            hide_after_launch: false,
         }
     }
 }
@@ -409,6 +415,17 @@ mod user_settings_tests {
     use super::{UserSettings, load_user_settings, save_user_settings};
 
     #[test]
+    fn launch_window_preference_defaults_visible_and_persists_opt_in() {
+        let base = tempfile::tempdir().unwrap();
+        assert!(!load_user_settings(base.path()).hide_after_launch);
+        let legacy: UserSettings = serde_json::from_str(r#"{"proxy_udp":false}"#).unwrap();
+        assert!(!legacy.hide_after_launch);
+        let mut settings = UserSettings::default();
+        settings.hide_after_launch = true;
+        save_user_settings(base.path(), &settings).unwrap();
+        assert!(load_user_settings(base.path()).hide_after_launch);
+    }
+    #[test]
     fn udp_defaults_on_for_new_install_and_missing_field() {
         let base = tempfile::tempdir().unwrap();
         assert!(load_user_settings(base.path()).proxy_udp);
@@ -432,7 +449,11 @@ mod user_settings_tests {
     #[test]
     fn manual_udp_opt_out_survives_new_version_reloads() {
         let base = tempfile::tempdir().unwrap();
-        let settings = UserSettings { proxy_udp: false, proxy_enabled: false };
+        let settings = UserSettings {
+            proxy_udp: false,
+            proxy_enabled: false,
+            ..UserSettings::default()
+        };
         save_user_settings(base.path(), &settings).unwrap();
         for _ in 0..2 {
             let decoded = load_user_settings(base.path());
@@ -463,6 +484,7 @@ mod user_settings_tests {
         let settings = UserSettings {
             proxy_udp: false,
             proxy_enabled: false,
+            ..UserSettings::default()
         };
 
         save_user_settings(&base_dir, &settings).unwrap();

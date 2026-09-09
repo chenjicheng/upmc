@@ -6,6 +6,7 @@ pub enum Job {
     ProxyStop,
     UdpSettings,
     ChannelSettings,
+    WindowSettings,
     Launch,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +37,10 @@ pub struct UiState {
     pub percent: u32,
 }
 impl UiState {
+    pub fn launch_window_error(&mut self, error: String) {
+        self.error = error;
+        self.error_job = Some(Job::Launch);
+    }
     pub fn fail_before_start(&mut self, error: String) {
         let restore_proxy = matches!(self.busy, Some(Job::ProxyStart | Job::ProxyStop));
         let previous_proxy = self.previous_proxy;
@@ -77,7 +82,7 @@ impl UiState {
                 self.proxy = false;
                 "未启用"
             }
-            Job::UdpSettings | Job::ChannelSettings => "正在保存设置",
+            Job::UdpSettings | Job::ChannelSettings | Job::WindowSettings => "正在保存设置",
             Job::Launch => "正在启动 PCL",
         };
         if matches!(job, Job::Update | Job::Launch) {
@@ -116,10 +121,7 @@ impl UiState {
                 "代理已停止"
             }
             Outcome::Saved => "设置已保存",
-            Outcome::Launched => {
-                self.exit = true;
-                "PCL 已启动"
-            }
+            Outcome::Launched => "PCL 已启动",
             Outcome::Failed(error) => {
                 self.error = error;
                 self.error_job = Some(job);
@@ -133,7 +135,7 @@ impl UiState {
                         self.proxy = false;
                         "代理停止不完整"
                     }
-                    Job::UdpSettings | Job::ChannelSettings => "设置保存失败",
+                    Job::UdpSettings | Job::ChannelSettings | Job::WindowSettings => "设置保存失败",
                     Job::Launch => "启动失败",
                 }
             }
@@ -147,6 +149,16 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launched_pcl_keeps_updater_alive_and_usable() {
+        let mut state = UiState::default();
+        state.ready = true;
+        state.begin(Job::Launch);
+        state.finish(Outcome::Launched);
+        assert!(!state.exit);
+        assert!(state.ready);
+        assert!(state.begin(Job::UdpSettings));
+    }
     #[test]
     fn offline_recheck_does_not_stop_a_running_proxy() {
         let mut s = UiState::default();
@@ -246,7 +258,7 @@ mod tests {
         assert_eq!(s.error, "launcher missing");
         assert!(s.begin(Job::Launch));
         s.finish(Outcome::Launched);
-        assert!(s.exit);
+        assert!(!s.exit);
     }
     #[test]
     fn failed_recheck_revokes_old_readiness_and_can_retry() {
