@@ -148,6 +148,8 @@ struct Controller {
     sender: SyncSender<Event>,
     executor: Executor,
 }
+const BUSY_CLOSE_FEEDBACK: &str = "任务进行中，请等待完成后关闭。";
+
 impl Controller {
     fn submit_switch(&self, control: Control, enabled: bool) {
         if matches!(self.state.borrow().busy, Some(Job::Update | Job::Launch))
@@ -225,6 +227,9 @@ impl Controller {
     }
     fn refresh(&self) {
         if let Some(ui) = self.ui.upgrade() {
+            if self.state.borrow().busy.is_none() && ui.get_feedback() == BUSY_CLOSE_FEEDBACK {
+                ui.set_feedback("".into());
+            }
             render(&ui, &self.state.borrow());
             let local = version::read_local_version(&self.base);
             ui.set_pack_metadata(if local.mc_version.is_empty() {
@@ -327,7 +332,7 @@ impl Controller {
     fn request_close(&self) -> bool {
         if self.state.borrow().busy.is_some() {
             if let Some(ui) = self.ui.upgrade() {
-                ui.set_feedback("任务进行中，请等待完成后关闭。".into());
+                ui.set_feedback(BUSY_CLOSE_FEEDBACK.into());
             }
             false
         } else {
@@ -524,6 +529,37 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
 mod tests {
     use super::*;
     use crate::gui_state::{Job, Outcome};
+    #[test]
+    fn close_warning_ends_with_job_but_unrelated_feedback_remains() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, _) = mpsc::sync_channel(64);
+        let c = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(true),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: |_, _, _, _| Ok(Outcome::Saved),
+        };
+        c.state.borrow_mut().begin(Job::Settings);
+        assert!(!c.request_close());
+        assert!(!ui.get_feedback().is_empty());
+        c.refresh();
+        assert!(!ui.get_feedback().is_empty());
+        c.event(Event::Finished(Outcome::Saved));
+        assert!(ui.get_feedback().is_empty());
+        assert!(c.request_close());
+        ui.set_feedback("窗口操作失败".into());
+        c.refresh();
+        assert_eq!(ui.get_feedback(), "窗口操作失败");
+    }
     #[test]
     fn acknowledged_channel_choice_is_applied_without_a_second_storage_read() {
         i_slint_backend_testing::init_no_event_loop();
