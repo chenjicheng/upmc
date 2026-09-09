@@ -23,6 +23,7 @@ pub struct UiState {
     pub started: Option<std::time::Instant>,
     pub previous_status: String,
     pub previous_ready: bool,
+    previous_proxy: bool,
     pub progress_detail: String,
     pub busy: Option<Job>,
     pub ready: bool,
@@ -34,6 +35,14 @@ pub struct UiState {
     pub percent: u32,
 }
 impl UiState {
+    pub fn fail_before_start(&mut self, error: String) {
+        let restore_proxy = matches!(self.busy, Some(Job::ProxyStart | Job::ProxyStop));
+        let previous_proxy = self.previous_proxy;
+        self.finish(Outcome::Failed(error));
+        if restore_proxy {
+            self.proxy = previous_proxy;
+        }
+    }
     pub fn error_job(&self) -> Option<Job> {
         self.error_job
     }
@@ -43,6 +52,7 @@ impl UiState {
         }
         self.previous_status = self.status.clone();
         self.previous_ready = self.ready;
+        self.previous_proxy = self.proxy;
         self.started = Some(std::time::Instant::now());
         self.progress_detail.clear();
         self.busy = Some(job);
@@ -89,7 +99,6 @@ impl UiState {
             }
             Outcome::Offline => {
                 self.ready = true;
-                self.proxy = false;
                 "离线模式"
             }
             Outcome::Restarting => {
@@ -137,6 +146,30 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn offline_recheck_does_not_stop_a_running_proxy() {
+        let mut s = UiState::default();
+        s.begin(Job::Update);
+        s.finish(Outcome::Updated(true));
+        s.begin(Job::Update);
+        s.finish(Outcome::Offline);
+        assert!(
+            s.proxy,
+            "offline game lookup does not stop Xray or remove Discord DLLs"
+        );
+    }
+    #[test]
+    fn failed_worker_creation_restores_the_proxy_that_was_never_stopped() {
+        let mut s = UiState::default();
+        s.begin(Job::Update);
+        s.finish(Outcome::Updated(true));
+        s.begin(Job::ProxyStop);
+        assert!(!s.proxy);
+        s.fail_before_start("thread creation rejected".into());
+        assert!(s.proxy);
+        assert!(s.ready);
+        assert_eq!(s.error, "thread creation rejected");
+    }
     #[test]
     fn unrelated_setting_save_does_not_erase_launch_error_details() {
         let mut s = UiState::default();

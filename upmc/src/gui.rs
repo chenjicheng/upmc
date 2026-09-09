@@ -2,6 +2,7 @@ use crate::{
     config::{self, ChannelConfig, UpdateChannel},
     discord_proxy,
     gui_state::{Job, Outcome, UiState},
+    gui_switches::{Control, SwitchQueue},
     update::{self, Progress, UpdateResult},
     version,
 };
@@ -9,7 +10,7 @@ use anyhow::{Context, Result};
 use slint::ComponentHandle;
 use std::os::windows::process::CommandExt;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
     sync::mpsc::{self, SyncSender},
@@ -47,6 +48,7 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
     let busy = state.busy.is_some();
     ui.set_busy(busy);
     let main_job = matches!(state.busy, Some(Job::Update | Job::Launch));
+    ui.set_switches_enabled(!main_job && !state.exit);
     let main_busy = main_job && elapsed >= Duration::from_millis(300);
     ui.set_main_busy(main_busy);
     ui.set_updating(main_busy && state.busy == Some(Job::Update));
@@ -81,9 +83,7 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
     });
     ui.set_scenario(if main_error { 5 } else { 0 });
     ui.set_detail(
-        if main_error {
-            state.error.chars().take(100).collect::<String>()
-        } else if main_busy {
+        if main_busy {
             state.progress_detail.clone()
         } else {
             String::new()
@@ -139,15 +139,88 @@ struct Controller {
     ui: slint::Weak<App>,
     base: PathBuf,
     channel: RefCell<ChannelConfig>,
+    udp: Cell<bool>,
     state: RefCell<UiState>,
     log: RefCell<Vec<String>>,
+    switches: RefCell<SwitchQueue>,
+    errors: RefCell<Vec<String>>,
+    error_window: RefCell<Option<slint::Weak<LogWindow>>>,
     sender: SyncSender<Event>,
     executor: Executor,
 }
 impl Controller {
+    fn submit_switch(&self, control: Control, enabled: bool) {
+        if matches!(self.state.borrow().busy, Some(Job::Update | Job::Launch))
+            || self.state.borrow().exit
+        {
+            return;
+        }
+        self.switches.borrow_mut().request(control, enabled);
+        self.repaint();
+        self.start_queued();
+    }
+    fn start_queued(&self) {
+        if self.state.borrow().busy.is_some() || self.state.borrow().exit {
+            return;
+        }
+        let next = self.switches.borrow_mut().take_next();
+        if let Some(change) = next {
+            self.start(match change.control {
+                Control::Proxy => Request::Proxy(change.enabled),
+                Control::Udp => Request::Udp(change.enabled),
+                Control::Channel => Request::Channel(if change.enabled {
+                    UpdateChannel::Dev
+                } else {
+                    UpdateChannel::Stable
+                }),
+            });
+        }
+    }
+    fn paint_switches(&self, ui: &App) {
+        let switches = self.switches.borrow();
+        let proxy = switches.value(Control::Proxy, self.state.borrow().proxy);
+        ui.set_proxy_on(proxy);
+        ui.set_proxy_text(if proxy { "已启用" } else { "未启用" }.into());
+        ui.set_udp_enabled(switches.value(Control::Udp, self.udp.get()));
+        ui.set_dev_channel(switches.value(
+            Control::Channel,
+            self.channel.borrow().channel == UpdateChannel::Dev,
+        ));
+    }
+    fn record_error(&self, error: String) {
+        let recent_steps = self.log.borrow().join("\n");
+        let context = match self.state.borrow().busy {
+            Some(Job::Update) => "更新整合包",
+            Some(Job::ProxyStart) => "启用 Discord 代理",
+            Some(Job::ProxyStop) => "停用 Discord 代理",
+            Some(Job::Settings) => "保存设置",
+            Some(Job::Launch) => "启动 PCL",
+            None => "界面操作",
+        };
+        let text = {
+            let mut errors = self.errors.borrow_mut();
+            let number = errors.len() + 1;
+            let mut record = format!("[{number}] {context}\n{error}");
+            if !recent_steps.is_empty() {
+                record.push_str(&format!("\n\n执行记录：\n{recent_steps}"));
+            }
+            errors.push(record);
+            errors.join("\n\n────────────────────────\n\n")
+        };
+        if let Some(window) = self
+            .error_window
+            .borrow()
+            .as_ref()
+            .and_then(slint::Weak::upgrade)
+            && window.get_heading() == "错误详情"
+        {
+            window.set_log_text(text.into());
+        }
+    }
     fn repaint(&self) {
         if let Some(ui) = self.ui.upgrade() {
             render(&ui, &self.state.borrow());
+            self.paint_switches(&ui);
         }
     }
     fn refresh(&self) {
@@ -163,22 +236,18 @@ impl Controller {
                 )
                 .into()
             });
-            ui.set_udp_enabled(config::load_user_settings(&self.base).proxy_udp);
+            ui.set_udp_enabled(self.udp.get());
             ui.set_dev_channel(self.channel.borrow().channel == UpdateChannel::Dev);
+            ui.set_window_title(config::window_title(self.channel.borrow().channel).into());
+            self.paint_switches(&ui);
         }
     }
     fn start(&self, request: Request) {
         if !self.state.borrow_mut().begin(request.job()) {
             return;
         }
-        self.refresh();
-        if let Some(ui) = self.ui.upgrade() {
-            match &request {
-                Request::Udp(value) => ui.set_udp_enabled(*value),
-                Request::Channel(value) => ui.set_dev_channel(*value == UpdateChannel::Dev),
-                _ => {}
-            }
-        }
+        self.log.borrow_mut().clear();
+        self.repaint();
         let base = self.base.clone();
         let channel = self.channel.borrow().clone();
         let sender = self.sender.clone();
@@ -199,9 +268,12 @@ impl Controller {
                 let _ = sender.send(Event::Finished(outcome));
             });
         if let Err(error) = spawn {
+            self.record_error(format!("无法启动后台任务：{error}"));
             self.state
                 .borrow_mut()
-                .finish(Outcome::Failed(format!("无法启动后台任务：{error}")));
+                .fail_before_start(format!("无法启动后台任务：{error}"));
+            self.switches.borrow_mut().complete(false);
+            self.start_queued();
             self.refresh();
         }
     }
@@ -216,20 +288,28 @@ impl Controller {
                 self.repaint();
             }
             Event::Finished(outcome) => {
-                if matches!(outcome, Outcome::Saved) {
-                    // Channel file may have been updated by this serialized worker.
-                    match std::fs::read(self.base.join(config::CHANNEL_CONFIG_FILE))
-                        .ok()
-                        .and_then(|v| serde_json::from_slice::<ChannelConfig>(&v).ok())
-                    {
-                        Some(channel) => *self.channel.borrow_mut() = channel,
-                        None => {} // UDP saves do not require a channel file.
+                if matches!(outcome, Outcome::Saved)
+                    && let Some(change) = self.switches.borrow().active()
+                {
+                    match change.control {
+                        Control::Channel => {
+                            self.channel.borrow_mut().channel = if change.enabled {
+                                UpdateChannel::Dev
+                            } else {
+                                UpdateChannel::Stable
+                            }
+                        }
+                        Control::Udp => self.udp.set(change.enabled),
+                        Control::Proxy => {}
                     }
                 }
                 if let Outcome::Failed(error) = &outcome {
-                    self.append_log(error.clone());
+                    self.record_error(error.clone());
                 }
+                let success = !matches!(outcome, Outcome::Failed(_));
                 self.state.borrow_mut().finish(outcome);
+                self.switches.borrow_mut().complete(success);
+                self.start_queued();
                 self.refresh();
                 if self.state.borrow().exit {
                     let _ = slint::quit_event_loop();
@@ -312,12 +392,17 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
     ui.set_pack_name(config::INSTALL_DIR_NAME.into());
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     let (sender, receiver) = mpsc::sync_channel(64);
+    let initial_udp = config::load_user_settings(&base).proxy_udp;
     let controller = Rc::new(Controller {
         ui: ui.as_weak(),
         base,
         channel: RefCell::new(channel),
+        udp: Cell::new(initial_udp),
         state: RefCell::new(UiState::default()),
         log: RefCell::new(Vec::new()),
+        switches: RefCell::new(SwitchQueue::default()),
+        errors: RefCell::new(Vec::new()),
+        error_window: RefCell::new(None),
         sender,
         executor,
     });
@@ -335,18 +420,17 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
     ui.on_check_update(move || c.start(Request::Update));
     let c = controller.clone();
     ui.on_proxy_toggle(move || {
-        let enable = !c.state.borrow().proxy;
-        c.start(Request::Proxy(enable));
+        let enable = !c
+            .switches
+            .borrow()
+            .value(Control::Proxy, c.state.borrow().proxy);
+        c.submit_switch(Control::Proxy, enable);
     });
     let c = controller.clone();
-    ui.on_udp_change(move |value| c.start(Request::Udp(value)));
+    ui.on_udp_change(move |value| c.submit_switch(Control::Udp, value));
     let c = controller.clone();
     ui.on_channel_change(move |value| {
-        c.start(Request::Channel(if value {
-            UpdateChannel::Dev
-        } else {
-            UpdateChannel::Stable
-        }))
+        c.submit_switch(Control::Channel, value);
     });
     let c = controller.clone();
     ui.on_close_window(move || {
@@ -368,40 +452,53 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
             ui.window().set_minimized(true);
         }
     });
-    let weak = ui.as_weak();
+    let c = controller.clone();
     ui.on_drag_window(move || {
-        if let Some(ui) = weak.upgrade() {
+        if let Some(ui) = c.ui.upgrade() {
             match ui.window().with_winit_window(|w| w.drag_window()) {
                 Some(Ok(())) => {}
-                other => ui.set_feedback(format!("窗口拖动失败：{other:?}").into()),
+                other => {
+                    c.record_error(format!("窗口拖动失败：{other:?}"));
+                    ui.set_feedback("窗口操作失败".into());
+                    ui.set_has_error(true);
+                }
             }
         }
     });
     let logs = LogWindow::new()?;
+    *controller.error_window.borrow_mut() = Some(logs.as_weak());
     let c = controller.clone();
     let weak_logs = logs.as_weak();
     ui.on_show_logs(move || {
         if let Some(logs) = weak_logs.upgrade() {
             logs.set_heading("错误详情".into());
-            logs.set_log_text(c.log.borrow().join("\n").into());
+            logs.set_log_text(
+                c.errors
+                    .borrow()
+                    .join("\n\n────────────────────────\n\n")
+                    .into(),
+            );
             if let Err(error) = logs.show() {
+                c.record_error(format!("打开错误详情失败：{error}"));
                 if let Some(ui) = c.ui.upgrade() {
-                    ui.set_feedback(format!("无法打开日志：{error}").into());
+                    ui.set_feedback("无法打开错误详情".into());
                 }
             }
         }
     });
     let timer = slint::Timer::default();
     let weak_logs = logs.as_weak();
-    let weak_ui = ui.as_weak();
+    let c = controller.clone();
     ui.on_show_licenses(move || {
         if let Some(logs) = weak_logs.upgrade() {
             logs.set_heading("开源许可".into());
             logs.set_log_text(include_str!("../assets/third-party-notices.txt").into());
-            if let Err(error) = logs.show()
-                && let Some(ui) = weak_ui.upgrade()
-            {
-                ui.set_feedback(format!("无法打开开源许可：{error}").into());
+            if let Err(error) = logs.show() {
+                c.record_error(format!("打开开源许可失败：{error}"));
+                if let Some(ui) = c.ui.upgrade() {
+                    ui.set_feedback("无法打开开源许可".into());
+                    ui.set_has_error(true);
+                }
             }
         }
     });
@@ -427,6 +524,116 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
 mod tests {
     use super::*;
     use crate::gui_state::{Job, Outcome};
+    #[test]
+    fn acknowledged_channel_choice_is_applied_without_a_second_storage_read() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let c = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(false),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: |_, _, _, _| Ok(Outcome::Saved),
+        };
+        c.submit_switch(Control::Channel, true);
+        assert!(ui.get_dev_channel());
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(ui.get_dev_channel());
+        assert_eq!(c.channel.borrow().channel, UpdateChannel::Dev);
+        assert_eq!(
+            ui.get_window_title(),
+            config::window_title(UpdateChannel::Dev)
+        );
+        config::save_channel_config(
+            temp.path(),
+            &ChannelConfig {
+                channel: UpdateChannel::Stable,
+            },
+        )
+        .unwrap();
+        c.submit_switch(Control::Udp, true);
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert_eq!(
+            c.channel.borrow().channel,
+            UpdateChannel::Dev,
+            "UDP acknowledgement cannot reload a stale channel file"
+        );
+        assert!(ui.get_dev_channel());
+    }
+    #[test]
+    fn repeated_switch_clicks_apply_latest_intent_without_duplicate_backend_work() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(64);
+        fn fixture(
+            base: &Path,
+            _: &ChannelConfig,
+            request: Request,
+            _: &dyn Fn(Progress),
+        ) -> Result<Outcome> {
+            use std::io::Write;
+            let Request::Proxy(value) = request else {
+                anyhow::bail!("unexpected request")
+            };
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(base.join("calls"))?;
+            write!(file, "{value};")?;
+            Ok(if value {
+                Outcome::ProxyStarted
+            } else {
+                Outcome::ProxyStopped
+            })
+        }
+        let c = Controller {
+            ui: ui.as_weak(),
+            base: temp.path().to_owned(),
+            channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(true),
+            state: RefCell::new(UiState::default()),
+            log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
+            sender,
+            executor: fixture,
+        };
+        c.submit_switch(Control::Proxy, true);
+        assert!(ui.get_proxy_on());
+        c.submit_switch(Control::Proxy, false);
+        assert!(!ui.get_proxy_on());
+        c.submit_switch(Control::Proxy, true);
+        assert!(ui.get_proxy_on());
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("calls")).unwrap(),
+            "true;"
+        );
+        c.submit_switch(Control::Proxy, false);
+        c.submit_switch(Control::Proxy, true);
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(
+            ui.get_proxy_on(),
+            "old stop completion must not overwrite newer on intent"
+        );
+        c.event(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(ui.get_proxy_on());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("calls")).unwrap(),
+            "true;false;true;"
+        );
+    }
     #[test]
     fn short_busy_hints_are_not_shown_but_long_updates_are_visible() {
         i_slint_backend_testing::init_no_event_loop();
@@ -542,7 +749,10 @@ mod tests {
             "failure details must not move the existing action"
         );
         assert_eq!(ui.get_action_text(), "重试更新");
-        assert!(ui.get_detail().contains("SHA256 mismatch"));
+        assert!(
+            ui.get_detail().is_empty(),
+            "failure reasons belong only in the shared error window"
+        );
         state.begin(Job::Update);
         state.finish(Outcome::Updated(true));
         render(&ui, &state);
@@ -595,7 +805,7 @@ mod tests {
         ui.on_udp_change(move |_| count.set(count.get() + 1));
         find("UDP 流量开关").invoke_accessible_default_action();
         assert_eq!(udp_changes.get(), 1);
-        ui.set_busy(true);
+        ui.set_switches_enabled(false);
         find("UDP 流量开关").invoke_accessible_default_action();
         assert_eq!(udp_changes.get(), 1);
         find("关于").invoke_accessible_default_action();
@@ -619,13 +829,17 @@ mod tests {
             ui: ui.as_weak(),
             base: temp.path().to_owned(),
             channel: RefCell::new(ChannelConfig::default()),
+            udp: Cell::new(true),
             state: RefCell::new(UiState::default()),
             log: RefCell::new(Vec::new()),
+            switches: RefCell::new(SwitchQueue::default()),
+            errors: RefCell::new(Vec::new()),
+            error_window: RefCell::new(None),
             sender,
             executor: |_, _, _, _| anyhow::bail!("fixture: settings write rejected"),
         };
         ui.set_udp_enabled(true);
-        controller.start(Request::Udp(false));
+        controller.submit_switch(Control::Udp, false);
         assert!(
             !ui.get_udp_enabled(),
             "settings switch must change before persistence completes"
@@ -636,6 +850,25 @@ mod tests {
             "failed save restores the persisted/default value"
         );
         assert!(ui.get_settings_error().contains("settings write rejected"));
+        assert!(
+            controller
+                .errors
+                .borrow()
+                .join("\n")
+                .contains("settings write rejected")
+        );
+        let dialog = LogWindow::new().unwrap();
+        *controller.error_window.borrow_mut() = Some(dialog.as_weak());
+        for index in 0..600 {
+            controller.append_log(format!("progress {index}"));
+        }
+        controller.state.borrow_mut().begin(Job::Update);
+        controller.event(Event::Finished(Outcome::Failed(
+            "second full error cause".into(),
+        )));
+        assert!(dialog.get_log_text().contains("settings write rejected"));
+        assert!(dialog.get_log_text().contains("second full error cause"));
+        assert_eq!(controller.errors.borrow().len(), 2);
         assert!(
             execute(
                 tempfile::tempdir().unwrap().path(),

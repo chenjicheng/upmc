@@ -106,6 +106,7 @@ export component App inherits Window {
  in property <string> pack-metadata;
  in property <string> app-version;
  in property <bool> busy: false;
+ in property <bool> switches-enabled: true;
  in property <bool> main-busy: false;
  in property <bool> updating: false;
  in property <bool> has-error: false;
@@ -158,11 +159,11 @@ export component App inherits Window {
     HorizontalBox { padding: 0px; spacing: 12px; height: 48px;
      Text { text: "Discord 代理"; color: #586458; vertical-alignment: center; width: 88px; font-size: 13px; }
      Rectangle { width: 40px; height: 48px;
-      ToggleSwitch { enabled: !root.busy; y: 8px; accessible-name: "Discord 代理开关"; checked: root.proxy-on; toggled => {root.proxy-toggle();} }
+      ToggleSwitch { enabled: root.switches-enabled; y: 8px; accessible-name: "Discord 代理开关"; checked: root.proxy-on; toggled => {root.proxy-toggle();} }
      }
      Rectangle { horizontal-stretch: 1;
       Text { visible: !root.proxy-error; text: root.proxy-text; color: #778174; vertical-alignment: center; font-size: 12px; }
-      if root.proxy-error : Action { y: 8px; height: 32px; width: parent.width; label: "未启用 · 查看原因"; accessible-name: "代理错误详情"; text-color: #9c513b; left-aligned: true; clicked => { root.show-logs(); } }
+      if root.proxy-error : Action { y: 8px; height: 32px; width: parent.width; label: root.proxy-on ? "已启用 · 查看原因" : "未启用 · 查看原因"; accessible-name: "代理错误详情"; text-color: #9c513b; left-aligned: true; clicked => { root.show-logs(); } }
      }
     }
     Text { text: "UPMC " + root.app-version; color: #a2aaa0; font-size: 10px; height: 16px; }
@@ -174,7 +175,7 @@ export component App inherits Window {
       Text { text: "让 Discord 语音也使用代理连接"; color: #899187; font-size: 12px; height: 20px; }
      }
      Rectangle { width: 40px; height: 56px;
-      ToggleSwitch { enabled: !root.busy; y: 12px; accessible-name: "UDP 流量开关"; checked: root.udp-enabled; toggled => {root.udp-change(!root.udp-enabled);} }
+      ToggleSwitch { enabled: root.switches-enabled; y: 12px; accessible-name: "UDP 流量开关"; checked: root.udp-enabled; toggled => {root.udp-change(!root.udp-enabled);} }
      }
     }
     Rectangle { height: 16px; }
@@ -184,7 +185,7 @@ export component App inherits Window {
       Text { text: "关闭时使用稳定版更新通道"; color: #657066; font-size: 12px; height: 20px; }
      }
      Rectangle { width: 40px; height: 56px;
-      ToggleSwitch { enabled: !root.busy; y: 12px; accessible-name: "开发版更新开关"; checked: root.dev-channel; toggled => {root.channel-change(!root.dev-channel);} }
+      ToggleSwitch { enabled: root.switches-enabled; y: 12px; accessible-name: "开发版更新开关"; checked: root.dev-channel; toggled => {root.channel-change(!root.dev-channel);} }
      }
     }
     Rectangle { vertical-stretch: 1; }
