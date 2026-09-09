@@ -1,11 +1,10 @@
-# One-time legacy transition. Branch/manual runs never publish.
+# Historical transition; ordinary branch validation uses release-slint.yml.
 # Later native promotion must preserve the two original entry documents.
 name: Build legacy updater
 
 on:
   push:
     tags: ['v0.4.8']
-    branches: [main, dev]
   workflow_dispatch:
 
 permissions:

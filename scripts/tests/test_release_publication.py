@@ -12,6 +12,13 @@ pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 
 class ReleaseTests(Fixtures):
+    def test_historical_workflow_does_not_duplicate_branch_builds(self):
+        root = Path(__file__).resolve().parents[2]
+        historical = (root / '.github/workflows/build-updater.yml').read_text(encoding='utf-8')
+        current = (root / '.github/workflows/release-slint.yml').read_text(encoding='utf-8')
+        self.assertNotIn('branches: [main, dev]', historical)
+        self.assertIn("tags: ['v0.4.8']", historical)
+        self.assertIn('branches: [main, dev]', current)
     def new_descriptor(self):
         return dict(self.descriptor(), version='0.5.0', download_url='https://github.com/chenjicheng/upmc/releases/download/v0.5.0/updater.exe')
 
