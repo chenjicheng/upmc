@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+import subprocess
 from unittest.mock import patch
 from test_legacy_publication import Fixtures, git, init_repo
 
@@ -65,3 +66,44 @@ class ReleaseTests(Fixtures):
         with patch.object(pub, '_verify_remote_tag'), patch.object(pub, 'lookup_release', side_effect=pub.PublicationError('HTTP 403')), patch.object(pub, '_run') as run:
             with self.assertRaises(pub.PublicationError): pub.ensure_release(self.artifact, '0.5.0', 'v0.5.0', self.sha)
             run.assert_not_called()
+
+    def test_remote_release_contract_against_new_publisher(self):
+        import test_legacy_publication as legacy
+        with patch.multiple(legacy, pub=pub, VERSION='0.5.0', TAG='v0.5.0', URL=pub.DOWNLOAD_URL):
+            result = unittest.TestResult()
+            unittest.defaultTestLoader.loadTestsFromTestCase(legacy.ReleaseTests).run(result)
+        self.assertEqual(result.testsRun, 6)
+        self.assertEqual(result.errors + result.failures, [])
+
+    def test_rerun_is_idempotent_and_does_not_rewind_later_promotion(self):
+        pages, remote, head = self.pages_fixture()
+        published = pub.publish_pages(pages, self.new_descriptor(), head)
+        git(pages, 'fetch', 'origin', 'gh-pages')
+        git(pages, 'merge', '--ff-only', 'FETCH_HEAD')
+        self.assertEqual(pub.publish_pages(pages, self.new_descriptor(), published), published)
+        (pages / 'bridge/version.json').write_text(json.dumps(dict(self.new_descriptor(), version='0.6.0')))
+        git(pages, 'add', '.'); git(pages, 'commit', '-m', 'later'); git(pages, 'push', 'origin', 'gh-pages')
+        head = git(pages, 'rev-parse', 'HEAD')
+        with self.assertRaises(pub.PublicationError): pub.publish_pages(pages, self.new_descriptor(), head)
+        self.assertEqual(git(remote, 'rev-parse', 'gh-pages'), head)
+
+    def test_lease_race_leaves_competing_commit_intact(self):
+        pages, remote, head = self.pages_fixture()
+        run = subprocess.run
+        def race(args, **kwargs):
+            if 'push' in args:
+                other = git(remote, '-c', 'user.name=Race', '-c', 'user.email=race@example.invalid', 'commit-tree', head + '^{tree}', '-p', head, '-m', 'race')
+                git(remote, 'update-ref', 'refs/heads/gh-pages', other, head)
+            return run(args, **kwargs)
+        with patch.object(subprocess, 'run', race), self.assertRaises(pub.PublicationError):
+            pub.publish_pages(pages, self.new_descriptor(), head)
+        self.assertEqual(json.loads(git(remote, 'show', 'gh-pages:bridge/version.json')), self.descriptor())
+        self.assertEqual(git(pages, 'rev-parse', 'HEAD'), head)
+
+    def test_missing_frozen_entry_prevents_publication(self):
+        pages, remote, head = self.pages_fixture()
+        (pages / 'dev/version.json').unlink()
+        git(pages, 'add', '-A'); git(pages, 'commit', '-m', 'missing'); git(pages, 'push', 'origin', 'gh-pages')
+        head = git(pages, 'rev-parse', 'HEAD')
+        with self.assertRaises(pub.PublicationError): pub.publish_pages(pages, self.new_descriptor(), head)
+        self.assertEqual(git(remote, 'rev-parse', 'gh-pages'), head)
