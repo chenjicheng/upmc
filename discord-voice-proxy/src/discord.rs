@@ -64,6 +64,30 @@ fn kill_with(
         .context("Failed to execute Discord stop command")?;
     let processes =
         run("tasklist", &["/fo", "csv", "/nh"]).context("Failed to verify Discord termination")?;
+    let still_running = running_from_output(&processes)?;
+    anyhow::ensure!(
+        !still_running,
+        "Discord is still running after stop ({}): {}",
+        stopped.status,
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    // A failed taskkill may mean Discord was already closed. A successful
+    // process snapshot proving absence is the authoritative postcondition.
+    Ok(())
+}
+
+/// Query process state without launching or stopping Discord.
+pub fn is_running() -> Result<bool> {
+    use std::os::windows::process::CommandExt;
+    let output = std::process::Command::new("tasklist")
+        .args(["/fo", "csv", "/nh"])
+        .creation_flags(0x08000000)
+        .output()
+        .context("Failed to query Discord process state")?;
+    running_from_output(&output)
+}
+
+fn running_from_output(processes: &std::process::Output) -> Result<bool> {
     anyhow::ensure!(
         processes.status.success(),
         "Failed to verify Discord termination: {}",
@@ -74,23 +98,14 @@ fn kill_with(
         !listing.trim().is_empty(),
         "Empty process listing while verifying Discord termination"
     );
-    let still_running = listing.lines().any(|line| {
+    Ok(listing.lines().any(|line| {
         line.split(',')
             .next()
             .unwrap_or("")
             .trim()
             .trim_matches('"')
             .eq_ignore_ascii_case("Discord.exe")
-    });
-    anyhow::ensure!(
-        !still_running,
-        "Discord is still running after stop ({}): {}",
-        stopped.status,
-        String::from_utf8_lossy(&stopped.stderr)
-    );
-    // A failed taskkill may mean Discord was already closed. A successful
-    // process snapshot proving absence is the authoritative postcondition.
-    Ok(())
+    }))
 }
 
 /// Launch Discord from the latest app directory.

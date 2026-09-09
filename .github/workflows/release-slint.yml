@@ -1,10 +1,10 @@
-# Slint 0.5.0 release. Branch/manual runs never publish.
+# Slint 0.5.1 release. Branch/manual runs never publish.
 # Later native promotion must preserve the two original entry documents.
 name: Build Slint updater
 
 on:
   push:
-    tags: ['v0.5.0']
+    tags: ['v0.5.1']
     branches: [main, dev]
   workflow_dispatch:
 
@@ -97,7 +97,7 @@ jobs:
     needs: build
     if: >-
       needs.build.outputs.publish == 'true' && github.event_name == 'push' &&
-      github.ref == 'refs/tags/v0.5.0' && github.repository == 'chenjicheng/upmc'
+      github.ref == 'refs/tags/v0.5.1' && github.repository == 'chenjicheng/upmc'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

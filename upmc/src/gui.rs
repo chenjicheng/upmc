@@ -76,11 +76,16 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
         state.error_job(),
         Some(Job::ProxyStart | Job::ProxyStop)
     ));
-    ui.set_settings_error(if state.error_job() == Some(Job::Settings) {
-        state.error.clone().into()
-    } else {
-        "".into()
-    });
+    ui.set_settings_error(
+        if matches!(
+            state.error_job(),
+            Some(Job::UdpSettings | Job::ChannelSettings)
+        ) {
+            state.error.clone().into()
+        } else {
+            "".into()
+        },
+    );
     ui.set_scenario(if main_error { 5 } else { 0 });
     ui.set_detail(
         if main_busy {
@@ -125,7 +130,8 @@ impl Request {
             Self::Update => Job::Update,
             Self::Proxy(true) => Job::ProxyStart,
             Self::Proxy(false) => Job::ProxyStop,
-            Self::Udp(_) | Self::Channel(_) => Job::Settings,
+            Self::Udp(_) => Job::UdpSettings,
+            Self::Channel(_) => Job::ChannelSettings,
             Self::Launch => Job::Launch,
         }
     }
@@ -195,7 +201,8 @@ impl Controller {
             Some(Job::Update) => "更新整合包",
             Some(Job::ProxyStart) => "启用 Discord 代理",
             Some(Job::ProxyStop) => "停用 Discord 代理",
-            Some(Job::Settings) => "保存设置",
+            Some(Job::UdpSettings) => "保存 UDP 设置",
+            Some(Job::ChannelSettings) => "保存更新通道",
             Some(Job::Launch) => "启动 PCL",
             None => "界面操作",
         };
@@ -530,6 +537,23 @@ mod tests {
     use super::*;
     use crate::gui_state::{Job, Outcome};
     #[test]
+    fn another_setting_does_not_hide_a_failed_setting() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let mut state = UiState::default();
+        state.begin(Request::Udp(true).job());
+        state.finish(Outcome::Failed("UDP save denied".into()));
+        state.begin(Request::Channel(UpdateChannel::Dev).job());
+        render(&ui, &state);
+        assert_eq!(ui.get_settings_error(), "UDP save denied");
+        state.finish(Outcome::Saved);
+        render(&ui, &state);
+        assert_eq!(ui.get_settings_error(), "UDP save denied");
+        state.begin(Request::Udp(true).job());
+        render(&ui, &state);
+        assert!(ui.get_settings_error().is_empty());
+    }
+    #[test]
     fn close_warning_ends_with_job_but_unrelated_feedback_remains() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = App::new().unwrap();
@@ -548,7 +572,7 @@ mod tests {
             sender,
             executor: |_, _, _, _| Ok(Outcome::Saved),
         };
-        c.state.borrow_mut().begin(Job::Settings);
+        c.state.borrow_mut().begin(Job::UdpSettings);
         assert!(!c.request_close());
         assert!(!ui.get_feedback().is_empty());
         c.refresh();

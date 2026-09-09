@@ -4,7 +4,8 @@ pub enum Job {
     Update,
     ProxyStart,
     ProxyStop,
-    Settings,
+    UdpSettings,
+    ChannelSettings,
     Launch,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,7 +77,7 @@ impl UiState {
                 self.proxy = false;
                 "未启用"
             }
-            Job::Settings => "正在保存设置",
+            Job::UdpSettings | Job::ChannelSettings => "正在保存设置",
             Job::Launch => "正在启动 PCL",
         };
         if matches!(job, Job::Update | Job::Launch) {
@@ -132,7 +133,7 @@ impl UiState {
                         self.proxy = false;
                         "代理停止不完整"
                     }
-                    Job::Settings => "设置保存失败",
+                    Job::UdpSettings | Job::ChannelSettings => "设置保存失败",
                     Job::Launch => "启动失败",
                 }
             }
@@ -177,7 +178,7 @@ mod tests {
         s.finish(Outcome::Updated(false));
         s.begin(Job::Launch);
         s.finish(Outcome::Failed("PCL executable missing".into()));
-        s.begin(Job::Settings);
+        s.begin(Job::UdpSettings);
         s.finish(Outcome::Saved);
         assert_eq!(s.error, "PCL executable missing");
         s.begin(Job::Launch);
@@ -234,7 +235,7 @@ mod tests {
         let mut s = UiState::default();
         assert!(!s.begin(Job::Launch));
         assert!(s.begin(Job::Update));
-        for job in [Job::Update, Job::Launch, Job::ProxyStart, Job::Settings] {
+        for job in [Job::Update, Job::Launch, Job::ProxyStart, Job::UdpSettings] {
             assert!(!s.begin(job));
         }
         s.finish(Outcome::Updated(true));
@@ -283,7 +284,7 @@ mod tests {
     #[test]
     fn restart_never_enables_launch_and_settings_do_not_authorize_it() {
         let mut s = UiState::default();
-        s.begin(Job::Settings);
+        s.begin(Job::UdpSettings);
         s.finish(Outcome::Saved);
         assert!(!s.ready && !s.exit);
         s.begin(Job::Update);

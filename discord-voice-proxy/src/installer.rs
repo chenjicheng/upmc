@@ -84,6 +84,7 @@ pub fn ensure_installed(
         proxy_dll,
         force_proxy_dll,
         config,
+        discord::is_running,
         discord::kill,
         discord::launch,
     )
@@ -94,6 +95,7 @@ fn ensure_in_dirs(
     proxy_dll: &[u8],
     force_proxy_dll: &[u8],
     config: &ProxyConfig,
+    running: impl FnOnce() -> Result<bool>,
     stop: impl FnOnce() -> Result<()>,
     start: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
@@ -117,6 +119,8 @@ fn ensure_in_dirs(
     let reload = changes
         .iter()
         .any(|(dir, _, changed)| *changed && dir.join(DWRITE_DLL).exists());
+    let reload =
+        reload && running().context("Failed to query Discord before configuration update")?;
     if reload {
         stop().context("Failed to stop Discord for proxy configuration update")?;
     }
@@ -185,6 +189,7 @@ mod tests {
             b"dll",
             b"force",
             &config,
+            || Ok(true),
             || {
                 calls.borrow_mut().push("stop");
                 Ok(())
@@ -205,16 +210,34 @@ mod tests {
             b"dll",
             b"force",
             &config,
+            || Ok(true),
             || panic!("unchanged stop"),
             || panic!("unchanged start"),
         )
         .unwrap();
+        config.udp = false;
+        ensure_in_dirs(
+            &[root.clone()],
+            b"dll",
+            b"force",
+            &config,
+            || Ok(false),
+            || panic!("closed Discord must stay closed"),
+            || panic!("closed Discord must not launch"),
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(root.join(PROXY_TXT))
+            .unwrap()
+            .contains("SOCKS5_PROXY_UDP=false"));
+        config.udp = true;
+        install_to_dir(&root, b"dll", b"force", &config).unwrap();
         config.udp = false;
         let error = ensure_in_dirs(
             &[root.clone()],
             b"dll",
             b"force",
             &config,
+            || Ok(true),
             || anyhow::bail!("stop denied"),
             || panic!("start after stop failure"),
         )
@@ -228,6 +251,7 @@ mod tests {
             b"dll",
             b"force",
             &config,
+            || Ok(true),
             || {
                 let mut attrs = std::fs::metadata(root.join(PROXY_TXT))?.permissions();
                 attrs.set_readonly(true);
