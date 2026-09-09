@@ -143,6 +143,12 @@ enum Event {
     Finished(Outcome),
 }
 type Executor = fn(&Path, &ChannelConfig, Request, &dyn Fn(Progress)) -> Result<Outcome>;
+#[cfg(test)]
+type NativeTestDriver = Box<dyn FnMut(&App, &Controller, bool)>;
+#[cfg(test)]
+thread_local! {
+    static NATIVE_TEST_DRIVER: RefCell<Option<NativeTestDriver>> = RefCell::new(None);
+}
 struct Controller {
     ui: slint::Weak<App>,
     base: PathBuf,
@@ -603,6 +609,14 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
             if c.state.borrow().busy.is_some() {
                 c.repaint();
             }
+            #[cfg(test)]
+            NATIVE_TEST_DRIVER.with(|driver| {
+                if let Some(driver) = driver.borrow_mut().as_mut()
+                    && let Some(ui) = c.ui.upgrade()
+                {
+                    driver(&ui, &c, tray.borrow().is_some());
+                }
+            });
         },
     );
     controller.start(Request::Update);
@@ -615,6 +629,184 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
 mod tests {
     use super::*;
     use crate::gui_state::{Job, Outcome};
+    fn automated_native_window_lifecycle(custom_close: bool) {
+        use slint::winit_030::WinitWindowAccessor;
+        let temp = tempfile::tempdir().unwrap();
+        let result = Rc::new(RefCell::new(None::<std::result::Result<(), String>>));
+        let outcome = result.clone();
+        let started = std::time::Instant::now();
+        let mut stage = 0;
+        let mut hidden_ticks = 0;
+        NATIVE_TEST_DRIVER.with(|driver| {
+            *driver.borrow_mut() = Some(Box::new(move |ui, controller, tray_exists| {
+                let tick = (|| -> Result<()> {
+                    anyhow::ensure!(
+                        started.elapsed() < Duration::from_secs(15),
+                        "native stage {stage} timed out"
+                    );
+                    anyhow::ensure!(
+                        controller.errors.borrow().is_empty(),
+                        "native stage {stage} errors: {:?}",
+                        controller.errors.borrow()
+                    );
+                    anyhow::ensure!(
+                        !controller.state.borrow().exit,
+                        "updater exited during stage {stage}"
+                    );
+                    if controller.state.borrow().busy.is_some() {
+                        return Ok(());
+                    }
+                    match stage {
+                        0 => {
+                            anyhow::ensure!(
+                                controller.state.borrow().ready,
+                                "initial update not ready"
+                            );
+                            anyhow::ensure!(
+                                ui.window().is_visible() && !ui.get_hide_after_launch(),
+                                "default window must be visible with hiding off"
+                            );
+                            ui.invoke_primary_action();
+                            stage = 1;
+                        }
+                        1 => {
+                            anyhow::ensure!(
+                                controller.state.borrow().status == "PCL 已启动",
+                                "default launch did not complete"
+                            );
+                            anyhow::ensure!(
+                                ui.window().is_visible() && !tray_exists,
+                                "default launch hid the native window or created a tray"
+                            );
+                            anyhow::ensure!(
+                                ui.window().with_winit_window(|w| w.is_visible())
+                                    == Some(Some(true)),
+                                "native window is not visible"
+                            );
+                            ui.invoke_hide_after_launch_change(true);
+                            anyhow::ensure!(
+                                ui.get_hide_after_launch(),
+                                "hide switch did not respond immediately"
+                            );
+                            stage = 2;
+                        }
+                        2 => {
+                            anyhow::ensure!(
+                                config::load_user_settings(&controller.base).hide_after_launch,
+                                "hide preference was not persisted"
+                            );
+                            ui.invoke_primary_action();
+                            stage = 3;
+                        }
+                        3 => {
+                            anyhow::ensure!(
+                                controller.state.borrow().status == "PCL 已启动",
+                                "opt-in launch did not complete"
+                            );
+                            anyhow::ensure!(tray_exists, "real tray icon was not created");
+                            anyhow::ensure!(
+                                !ui.window().is_visible(),
+                                "opt-in did not hide window"
+                            );
+                            anyhow::ensure!(
+                                ui.window().with_winit_window(|w| w.is_visible())
+                                    == Some(Some(false)),
+                                "native window is still visible after hiding"
+                            );
+                            hidden_ticks += 1;
+                            // Reaching later timer ticks while hidden proves the loop is still alive.
+                            if hidden_ticks >= 3 {
+                                controller.restore_window(|ui| ui.show().map_err(Into::into));
+                                stage = 4;
+                            }
+                        }
+                        4 => {
+                            anyhow::ensure!(
+                                ui.window().is_visible(),
+                                "production restoration did not show window"
+                            );
+                            anyhow::ensure!(
+                                ui.window().with_winit_window(|w| w.is_visible())
+                                    == Some(Some(true)),
+                                "restored native window is not visible"
+                            );
+                            ui.invoke_minimize_window();
+                            stage = 5;
+                        }
+                        5 => {
+                            if ui.window().with_winit_window(|w| w.is_minimized())
+                                != Some(Some(true))
+                            {
+                                return Ok(());
+                            }
+                            controller.restore_window(|ui| ui.show().map_err(Into::into));
+                            stage = 6;
+                        }
+                        6 => {
+                            if ui.window().with_winit_window(|w| w.is_minimized())
+                                != Some(Some(false))
+                            {
+                                return Ok(());
+                            }
+                            anyhow::ensure!(
+                                ui.window().is_visible(),
+                                "unminimized window is hidden"
+                            );
+                            *outcome.borrow_mut() = Some(Ok(()));
+                            if custom_close {
+                                ui.invoke_close_window();
+                            } else {
+                                native_close(controller, || {
+                                    let _ = slint::quit_event_loop();
+                                });
+                            }
+                            stage = 7;
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = tick {
+                    *outcome.borrow_mut() = Some(Err(format!("stage {stage}: {error:#}")));
+                    let _ = slint::quit_event_loop();
+                }
+            }));
+        });
+        fn fixture(
+            base: &Path,
+            channel: &ChannelConfig,
+            request: Request,
+            progress: &dyn Fn(Progress),
+        ) -> Result<Outcome> {
+            match request {
+                Request::Update => Ok(Outcome::Updated(false)),
+                Request::Launch => Ok(Outcome::Launched),
+                Request::HideAfterLaunch(_) => execute(base, channel, request, progress),
+                _ => anyhow::bail!("unexpected native fixture backend request"),
+            }
+        }
+        let run = run_with_executor(temp.path().to_owned(), ChannelConfig::default(), fixture);
+        NATIVE_TEST_DRIVER.with(|driver| {
+            driver.borrow_mut().take();
+        });
+        run.expect("native lifecycle startup/event-loop failure");
+        result
+            .borrow_mut()
+            .take()
+            .expect("native loop returned before lifecycle completed")
+            .unwrap();
+        assert!(!temp.path().join(config::PCL2_EXE).exists());
+    }
+    #[test]
+    #[ignore = "native app integration; run alone in its own process, no desktop input"]
+    fn native_lifecycle_with_native_close() {
+        automated_native_window_lifecycle(false);
+    }
+    #[test]
+    #[ignore = "native app integration; run alone in its own process, no desktop input"]
+    fn native_lifecycle_with_custom_close() {
+        automated_native_window_lifecycle(true);
+    }
     fn launch_controller(ui: &App, base: &Path, sender: SyncSender<Event>) -> Controller {
         Controller {
             ui: ui.as_weak(),
