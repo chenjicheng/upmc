@@ -1,23 +1,10 @@
-// ============================================================
-// selfupdate.rs — 更新器自更新模块
-// ============================================================
-// 负责：
-//   1. 从 HTTPS bridge manifest 验证版本和完整性元数据
-//   2. 下载官方 Release，验证 SHA256 和长度（此桥接协议不是签名）
-//   3. 启动自拷贝 helper 替换并重启
-//   4. 清理残留临时文件
-//
-// 自替换策略（自拷贝 helper）：
-//   当前进程下载新 exe → .exe.new
-//   → 将当前 exe 复制为唯一命名的 upmc-update-helper-*.exe
-//   → helper 进程等待原 exe 解锁后原子替换，并保留 .exe.old
-//   → 校验已安装文件后启动新版；失败则原子恢复 .exe.old
-//   → 当前进程退出
-//
-// 该策略避免调用 PowerShell / cmd / 脚本解释器，也不使用
-// ExecutionPolicy Bypass，降低 Defender 启发式误报概率。
-// ============================================================
-
+// =====================================================// selfupdate.rs — 更新器自更新模块
+// =====================================================// The HTTPS bridge validates release metadata and channel policy. The pinned
+// self_update custom backend downloads, verifies and installs the exact asset;
+// self-replace owns current-image replacement and its native cleanup helper.
+// A verified independent backup and health supervision protect recovery.
+// Legacy incoming helper arguments remain supported for already deployed builds.
+// =====================================================
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -1200,23 +1187,32 @@ fn startup_health_ack_from(args: &[String], executable: &Path) -> Result<Option<
 /// the self-update protocol.
 pub fn acknowledge_health_when_window_ready(ack: StartupHealthAck) {
     thread::spawn(move || {
-        acknowledge_health_when_window_ready_with(
-            &ack,
-            HEALTH_CHECK_ATTEMPTS,
-            HEALTH_CHECK_INTERVAL,
-            process_has_visible_window,
-            thread::sleep,
-        )
+        let acknowledge = || {
+            acknowledge_health_when_window_ready_with(
+                &ack,
+                HEALTH_CHECK_ATTEMPTS,
+                HEALTH_CHECK_INTERVAL,
+                process_has_visible_window,
+                thread::sleep,
+            )
+        };
+        #[cfg(windows)]
+        legacy_cleanup::after_ack(
+            legacy_cleanup::ParentProof::capture(),
+            acknowledge,
+            legacy_cleanup::ParentProof::finish,
+        );
+        #[cfg(not(windows))]
+        acknowledge();
     });
 }
-
 fn acknowledge_health_when_window_ready_with(
     ack: &StartupHealthAck,
     attempts: usize,
     delay: Duration,
     mut visible_window: impl FnMut() -> Result<bool>,
     mut sleep: impl FnMut(Duration),
-) {
+) -> bool {
     for attempt in 0..attempts {
         let visible = match visible_window() {
             Ok(visible) => visible,
@@ -1229,7 +1225,7 @@ fn acknowledge_health_when_window_ready_with(
                     "helper rejects unacknowledged candidate",
                     ack.path.display(),
                 );
-                return;
+                return false;
             }
         };
         if visible {
@@ -1242,8 +1238,9 @@ fn acknowledge_health_when_window_ready_with(
                     "helper retains backup and rejects unacknowledged candidate",
                     ack.path.display(),
                 );
+                return false;
             }
-            return;
+            return true;
         }
         if attempt + 1 < attempts {
             sleep(delay);
@@ -1257,6 +1254,7 @@ fn acknowledge_health_when_window_ready_with(
         "helper rejects unacknowledged candidate",
         ack.path.display(),
     );
+    false
 }
 
 fn validate_health_ack_path(path: &Path, executable: &Path) -> Result<PathBuf> {
@@ -1468,7 +1466,9 @@ fn cleanup_old_exe_with(exe: Result<PathBuf>) {
 }
 
 fn cleanup_self_update_artifacts(exe: &Path) -> Result<()> {
+    library::ensure_process_can_update()?;
     let _transaction = acquire_update_lock(exe, 1, Duration::ZERO)?;
+    library::ensure_process_can_update()?;
     let metadata = fs::symlink_metadata(exe)
         .with_context(|| format!("无法检查当前更新器文件: {}", exe.display()))?;
     ensure!(metadata.file_type().is_file(), "当前更新器不是普通文件");
@@ -1694,6 +1694,7 @@ pub fn check_and_update(
     channel: UpdateChannel,
     on_progress: &dyn Fn(crate::update::Progress),
 ) -> Result<SelfUpdateResult> {
+    library::ensure_process_can_update()?;
     on_progress(crate::update::Progress::new(
         1,
         format!("检查更新器版本 ({channel})..."),
@@ -1717,54 +1718,19 @@ pub fn check_and_update(
         format!("发现新版本 {local_id} → {remote_id}，正在下载..."),
     ));
 
-    // 下载新 exe 到临时文件
     let exe_path = current_exe_path()?;
     let _transaction = acquire_update_lock(&exe_path, 1, Duration::ZERO)?;
+    library::ensure_process_can_update()?;
     remove_inactive_helpers(&exe_path)?;
-    let temp_path = exe_path.with_extension("exe.new");
-    let download_url = &info.download_url;
-
-    remove_stale_file(&temp_path).context("清理旧的更新器临时文件失败")?;
-
-    // 下载 + 校验：用闭包包裹，出错时统一清理临时文件
-    let download_and_verify = || -> Result<()> {
-        let agent = bridge_http_agent(Duration::from_secs(config::DOWNLOAD_TIMEOUT_SECS));
-
-        let response = agent
-            .get(download_url)
-            .call()
-            .context("下载更新器新版本失败")?;
-
-        stage_download_reader(
-            response.into_body().into_reader(),
-            &temp_path,
-            &info,
-            on_progress,
-        )
-    };
-
-    let result = bridge_retry_with(
-        config::RETRY_MAX_ATTEMPTS,
-        Duration::from_secs(config::RETRY_BASE_DELAY_SECS),
-        "下载更新器",
-        download_and_verify,
-        thread::sleep,
-    );
-
-    result?;
-
-    on_progress(crate::update::Progress::new(10, "正在准备替换更新器..."));
-
-    if let Err(error) = spawn_update_helper(&exe_path, &temp_path, &info, channel) {
-        crate::observability::cleanup(remove_stale_file(&temp_path), temp_path.display());
-        return Err(error).context("启动自更新 helper 失败");
-    }
-
+    on_progress(crate::update::Progress::new(
+        5,
+        "正在下载、校验并安装更新器...",
+    ));
+    library::apply(&info, &exe_path, channel)?;
     on_progress(crate::update::Progress::new(
         11,
-        "已交接更新辅助程序，正在等待替换并重启...",
+        "新版已启动并通过健康确认，正在退出旧版...",
     ));
-
     Ok(SelfUpdateResult::Restarting)
 }
 
@@ -1790,47 +1756,6 @@ mod bridge_tests;
 #[cfg(test)]
 #[path = "selfupdate_helper_regression_tests.rs"]
 mod helper_regression_tests;
-
-/// 复制当前 exe 为 helper，并由 helper 完成替换。
-fn spawn_update_helper(
-    exe_path: &Path,
-    temp_path: &Path,
-    manifest: &UpdaterVersionInfo,
-    channel: UpdateChannel,
-) -> Result<()> {
-    let helper_name = unique_helper_file_name();
-    let helper_path = exe_path
-        .parent()
-        .context("无法确定更新器所在目录")?
-        .join(helper_name);
-
-    prepare_update_helper(&helper_path, || {
-        copy_file_with_retry(exe_path, &helper_path, 10, Duration::from_millis(300))
-    })?;
-
-    let spawn_result = restart_command(&helper_path, None)
-        .arg(SELF_UPDATE_HELPER_ARG)
-        .arg(SELF_UPDATE_SOURCE_ARG)
-        .arg(temp_path)
-        .arg(SELF_UPDATE_TARGET_ARG)
-        .arg(exe_path)
-        .arg(SELF_UPDATE_RESTART_ARG)
-        .arg(exe_path)
-        .arg(SELF_UPDATE_EXPECTED_SIZE_ARG)
-        .arg(manifest.size.to_string())
-        .arg(SELF_UPDATE_EXPECTED_SHA256_ARG)
-        .arg(&manifest.sha256)
-        .arg("--channel")
-        .arg(channel.to_string())
-        .spawn();
-    if let Err(error) = spawn_result {
-        crate::observability::cleanup(remove_stale_file(&helper_path), helper_path.display());
-        return Err(error)
-            .with_context(|| format!("启动自更新 helper 失败: {}", helper_path.display()));
-    }
-
-    Ok(())
-}
 
 fn restart_command(path: &Path, channel: Option<UpdateChannel>) -> Command {
     let mut command = Command::new(path);
@@ -3289,3 +3214,8 @@ fn bridge_retry_with<T>(
 #[cfg(test)]
 #[path = "selfupdate_transfer_tests.rs"]
 mod transfer_tests;
+
+#[cfg(windows)]
+mod legacy_cleanup;
+#[path = "selfupdate_library.rs"]
+mod library;

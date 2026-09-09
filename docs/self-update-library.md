@@ -1,0 +1,35 @@
+# Self-update library integration
+
+The active update path uses exact `self_update = 1.3.0`, with only `ureq` and `checksums` enabled, and the locked `self-replace = 1.5.0` implementation for replacement of the running Windows executable. The existing HTTPS bridge remains the authority for version, build ID, exact executable size, SHA256 and trusted download URL. This bridge is integrity metadata over HTTPS, not a signed manifest.
+
+## Selection and download
+
+Existing bridge validation and channel selection run before constructing the custom `ReleaseSource`. Stable remains forward-only. Dev also permits identical SemVer precedence with a different build ID. The library receives one pinned release and an exact `updater.exe` asset matcher; it does not independently discover a different latest release or apply a second version-selection policy.
+
+The library controls download, checksum verification, extraction and installation. Its `UreqClient` uses the existing bridge HTTP agent, retaining HTTPS and redirect policy. A response wrapper reads at most the advertised size plus one byte. Built-in SHA256 verification and both archive/binary hooks enforce exact size, SHA256 and the existing MZ identity contract. Oversized, truncated, corrupt or non-MZ bytes cannot reach installation. Download request establishment uses the library's bounded retry policy; mid-stream errors stop the attempt. Prompts and library console/progress output are disabled.
+
+The raw download is named `updater.exe`, while the library's plain-file extraction output is explicitly named `verified-updater.exe`. In 1.3.0, plain extraction copies inside the download directory; using the same name truncates its own input. This is a separate staging filename, not a change to the published asset or installed executable name.
+
+## Transaction and recovery
+
+The existing persistent transaction lock covers installation and candidate supervision. The canonical target path is captured before any replacement. Before invoking the library, UPMC independently copies and verifies the previous executable at `.exe.old`. This is required because `self-replace` can rename the running image before a subsequent operation fails. Installation failure must not assume the canonical target still exists.
+
+Immediately before the library's installation step, the successful binary-verification callback permanently marks the current process as possibly relocated. Subsequent self-update and generic cleanup operations in that process are forbidden, including a second guard after acquiring the transaction lock. This state is intentionally conservative: an installation error after the callback may have occurred before the first rename, but only an explicit restart clears the guard.
+
+After installation, UPMC verifies the independent backup and installed candidate, starts the candidate with the existing health acknowledgement protocol, and waits for health. The UI's existing readiness boundary remains authoritative. Only a healthy candidate permits deletion of the independent backup and a successful `Restarting` result; the caller then exits the old process. Backup-deletion failure is logged and must not keep the old process alive alongside the healthy candidate.
+
+Installation, installed-file verification, launch, or health failure restores the verified previous executable at the captured target. The old GUI remains alive and reports that the user must close and restart it; it cannot perform further update or cleanup operations after the mutation boundary. This deliberately avoids an automatic rollback relaunch loop. If the candidate cannot be confirmed stopped, restoration is forbidden and both candidate and backup are retained. If restoration fails, its error is retained alongside the original failure.
+
+The library owns its temporary download directory and its `.__relocated__.exe`, `.__selfdelete__.exe` and `.__temp__.exe` files. UPMC never sweeps those files. The upstream native cleanup helper waits for the old process to exit. `self-replace` internally uses a hidden `cmd.exe /c exit` to finish inherited delete-on-close handle cleanup; UPMC does not create a custom replacement helper or replacement script for new updates. Incoming legacy helper arguments remain supported for upgrades initiated by already deployed clients.
+
+## Local evidence
+
+The behavioral stub produced RED failures for verified-byte installation, corrupt/oversized rejection, recovery after target disappearance, and preserving both files when candidate termination fails. The native copied-executable fixture also failed because it never started a candidate. Additional RED checks covered post-install backup damage and deletion of a backup only after candidate health.
+
+`cargo test -p upmc` exercises the new unit cases plus existing bridge, channel, legacy helper, health and rollback regressions. The native Windows fixture copies the test executable into an isolated temporary directory, serves a second copy with a distinct PE overlay through an injected HTTP client, invokes the actual library replacement of its own running image, starts the candidate, acknowledges health, and exits the old process. The parent verifies the installed bytes, candidate marker, transaction exclusion, old-process update/cleanup poison guard and absence of library cleanup files after old-process exit. It does not launch the ordinary production application or touch user/game/Discord settings.
+
+The legacy deferred cleanup receipt also checks the process-mutation guard immediately after acquiring the shared transaction lock. Its isolated child-process regression first failed because an otherwise valid receipt deleted the helper and backup after poisoning; it passes only when both files are retained. The native library fixture additionally confirms a real relocated image exists while the old process is alive, before asserting cleanup after its exit.
+
+A second native fixture performs the real library replacement and then injects a candidate-launch error. It verifies restoration of the original canonical executable bytes, rejection of a second update before network/progress activity, rejection of generic and deferred cleanup in the relocated old process, and disappearance of library-owned images only after that process exits. Both child fixtures set their own `TEMP` and `TMP` to the isolated fixture directory: upstream moves its mapped image into the process temp root, so an install-directory-only scan would be insufficient. The tests record active library image names before old-process exit and require no library images or download staging directories afterward. A Windows file-sharing test holds the independent backup open without delete sharing after candidate health: backup deletion fails, but the transaction still succeeds and leaves the healthy candidate installed.
+
+The bundled third-party notices include the exact new locked dependencies, including `tray-icon`, with upstream copyright/license text preserved from their cached crates.io packages. Publication and live bridge verification remain separate final acceptance gates.

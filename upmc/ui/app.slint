@@ -116,6 +116,8 @@ export component App inherits Window {
  in property <bool> dev-channel: false;
  callback udp-change(bool);
  callback channel-change(bool);
+ in property <bool> hide-after-launch: false;
+ callback hide-after-launch-change(bool);
  callback show-logs;
  callback show-licenses;
  in property <string> proxy-text; in property <string> feedback; in property <int> scenario;
@@ -186,6 +188,16 @@ export component App inherits Window {
      }
      Rectangle { width: 40px; height: 56px;
       ToggleSwitch { enabled: root.switches-enabled; y: 12px; accessible-name: "开发版更新开关"; checked: root.dev-channel; toggled => {root.channel-change(!root.dev-channel);} }
+     }
+    }
+    Rectangle { height: 16px; }
+    HorizontalBox { padding: 0px; spacing: 24px; height: 56px;
+     VerticalBox { padding: 0px; spacing: 8px;
+      Text { text: "启动游戏后隐藏窗口"; color: #435044; font-size: 14px; height: 22px; }
+      Text { text: "隐藏到系统托盘，点击图标恢复"; color: #657066; font-size: 12px; height: 20px; }
+     }
+     Rectangle { width: 40px; height: 56px;
+      ToggleSwitch { enabled: root.switches-enabled; y: 12px; accessible-name: "启动后隐藏开关"; checked: root.hide-after-launch; toggled => {root.hide-after-launch-change(!root.hide-after-launch);} }
      }
     }
     Rectangle { vertical-stretch: 1; }

@@ -1,4 +1,4 @@
-"""Promote the Slint 0.5.1 release without changing frozen legacy entrypoints.
+"""Promote the Slint 0.5.2 release without changing frozen legacy entrypoints.
 
 The CLI is deliberately a single operation: no external hash, size, descriptor,
 repository, version or download URL can be supplied to the publisher.
@@ -15,12 +15,14 @@ import tempfile
 import tomllib
 
 REPOSITORY = "chenjicheng/upmc"
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 TAG = "v" + VERSION
 DOWNLOAD_URL = f"https://github.com/{REPOSITORY}/releases/download/{TAG}/updater.exe"
 PROXY_PREFIX = "https://gh.chenjicheng.cn/"
 PATHS = ("bridge/version.json", "bridge/dev/version.json")
-MARKER = ".upmc-release-0.5.1.json"
+MARKER = ".upmc-release-0.5.2.json"
+PREDECESSOR_VERSION = "0.5.1"
+PREDECESSOR_MARKER = ".upmc-release-0.5.1.json"
 FIELDS = {"version", "build_id", "download_url", "sha256", "size"}
 
 
@@ -43,16 +45,18 @@ def _sha(value):
 
 def _identity(version, tag, build_id):
     _require(version == VERSION and tag == TAG,
-             "This publisher only accepts exact version 0.5.1 and tag v0.5.1")
+             "This publisher only accepts exact version 0.5.2 and tag v0.5.2")
     _require(_sha(build_id), "build_id must be a full lowercase 40-digit commit SHA")
 
 
-def _validate_descriptor(descriptor):
+def _validate_descriptor(descriptor, version=VERSION):
     _require(isinstance(descriptor, dict) and set(descriptor) == FIELDS,
              "Descriptor must contain exactly version, build_id, download_url, sha256 and size")
-    _identity(descriptor["version"], TAG, descriptor["build_id"])
-    _require(descriptor["download_url"] in (DOWNLOAD_URL, PROXY_PREFIX + DOWNLOAD_URL),
-             "download_url must be the official v0.5.1 updater.exe HTTPS URL or its approved proxy")
+    _require(descriptor["version"] == version and _sha(descriptor["build_id"]),
+             f"Descriptor must identify exact version {version} and a full lowercase commit SHA")
+    url = f"https://github.com/{REPOSITORY}/releases/download/v{version}/updater.exe"
+    _require(descriptor["download_url"] in (url, PROXY_PREFIX + url),
+             f"download_url must be the official v{version} updater.exe HTTPS URL or its approved proxy")
     _require(isinstance(descriptor["sha256"], str)
              and re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is not None,
              "sha256 must contain 64 lowercase hex digits")
@@ -101,7 +105,7 @@ def validate_source(source, tag, build_id, ref, channel):
         raise PublicationError(f"Cannot read source package version: {error}") from error
     _identity(version, tag, build_id)
     _require(ref == "refs/tags/" + TAG and channel == "stable",
-             "Legacy publication requires the stable v0.5.1 tag; branches and dev are build-only")
+             "Legacy publication requires the stable v0.5.2 tag; branches and dev are build-only")
     _require(_git(source, "rev-parse", "HEAD") == build_id, "build_id differs from checked-out source commit")
     _require(_git(source, "rev-parse", f"refs/tags/{TAG}^{{commit}}") == build_id,
              "Release tag differs from checked-out source commit")
@@ -135,7 +139,7 @@ def _api(endpoint, allow_404=False):
 
 
 def lookup_release(tag):
-    _require(tag == TAG, "Only the v0.5.1 transition Release is allowed")
+    _require(tag == TAG, "Only the v0.5.2 transition Release is allowed")
     return _api(f"repos/{REPOSITORY}/releases/tags/{tag}", allow_404=True)
 
 
@@ -163,7 +167,7 @@ def ensure_release(artifact, version, tag, build_id):
         release = lookup_release(tag)
     _require(isinstance(release, dict), "Release is still unavailable after creation")
     _require(release.get("tag_name") == tag and release.get("draft") is False
-             and release.get("prerelease") is False, "Release must be the public stable v0.5.1 Release")
+             and release.get("prerelease") is False, "Release must be the public stable v0.5.2 Release")
     assets = release.get("assets")
     _require(isinstance(assets, list) and all(isinstance(asset, dict) for asset in assets),
              "Release assets must be a list of objects")
@@ -223,28 +227,44 @@ def publish_pages(pages, descriptor, expected_head):
     frozen_marker = ".upmc-legacy-transition.json"
     _require(frozen_marker in entries, "Frozen 0.4.8 transition is required")
     frozen = _json_page(pages, entries, frozen_marker)
-    _require(frozen.get("version") == "0.4.8", "Unexpected frozen transition version")
+    _validate_descriptor(frozen, "0.4.8")
     for path in ("version.json", "dev/version.json"):
-        _require(path in entries and _json_page(pages, entries, path) == frozen,
+        _require(path in entries, "Original legacy entrypoint is required")
+        legacy = _json_page(pages, entries, path)
+        _validate_descriptor(legacy, "0.4.8")
+        _require(legacy == frozen,
                  "Original legacy entrypoints must match their frozen transition")
     if MARKER in entries:
-        _require(_json_page(pages, entries, MARKER) == descriptor,
+        current_marker = _json_page(pages, entries, MARKER)
+        _validate_descriptor(current_marker)
+        _require(current_marker == descriptor,
                  "The legacy transition is already frozen to a different artifact")
-        _require(all(path in entries and _json_page(pages, entries, path) == descriptor for path in PATHS),
-                 "Transition already published and bridge metadata changed; refusing to rewind promotion")
+        for path in PATHS:
+            _require(path in entries, "Existing bridge descriptor is required")
+            current_feed = _json_page(pages, entries, path)
+            _validate_descriptor(current_feed)
+            _require(current_feed == descriptor,
+                     "Transition already published and bridge metadata changed; refusing to rewind promotion")
         return expected_head
+    existing_feeds = []
     for path in PATHS:
-        if path in entries:
-            existing = _json_page(pages, entries, path)
-            if existing == descriptor:
-                continue
-            _require(existing == frozen, "Refusing to replace an unknown or newer bridge release")
-        else:
-            raise PublicationError("Existing bridge descriptor is required")
+        _require(path in entries, "Existing bridge descriptor is required")
+        feed = _json_page(pages, entries, path)
+        _validate_descriptor(feed, "0.4.8" if feed.get("version") == "0.4.8" else PREDECESSOR_VERSION)
+        existing_feeds.append(feed)
         # Prevent a file/tree collision from deleting unrelated Pages content.
         _require(not any(key.startswith(path + "/") for key in entries), f"Pages target is a directory: {path}")
         for parent in Path(path).parents:
             _require(parent.as_posix() not in entries, f"Pages parent path is a file: {parent}")
+    _require(existing_feeds[0] == existing_feeds[1],
+             "Bridge feeds disagree; refusing an inconsistent promotion")
+    existing = existing_feeds[0]
+    if existing != frozen:
+        _require(PREDECESSOR_MARKER in entries, "Validated 0.5.1 release marker is required")
+        predecessor = _json_page(pages, entries, PREDECESSOR_MARKER)
+        _validate_descriptor(predecessor, PREDECESSOR_VERSION)
+        _require(existing == predecessor,
+                 "Refusing to replace an unknown, newer or unmarked bridge release")
     payload = json.dumps(descriptor, indent=2, sort_keys=True) + "\n"
     # Build the full candidate tree with an isolated index. Never modify checkout
     # files, the real index, or local refs, even if object creation/push fails.
