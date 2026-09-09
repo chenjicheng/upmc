@@ -925,6 +925,22 @@ mod tests {
         render_at(&ui, &state, Duration::ZERO);
         assert!(ui.get_has_error());
     }
+    fn smoke_launch(base: &Path) -> Result<Outcome> {
+        let attempted = base.join("launch-attempted");
+        if !attempted.exists() {
+            std::fs::write(attempted, "fixture")?;
+            anyhow::bail!("隔离测试：首次启动失败；再次点击模拟成功，不运行真实 PCL")
+        }
+        Ok(Outcome::Launched)
+    }
+    #[test]
+    fn desktop_launch_fixture_fails_once_then_simulates_success_without_pcl() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(smoke_launch(temp.path()).is_err());
+        assert_eq!(smoke_launch(temp.path()).unwrap(), Outcome::Launched);
+        assert_eq!(smoke_launch(temp.path()).unwrap(), Outcome::Launched);
+        assert!(!temp.path().join(config::PCL2_EXE).exists());
+    }
     #[test]
     #[ignore = "interactive Windows smoke; backend effects isolated to temporary fixture"]
     fn desktop_window_smoke() {
@@ -965,7 +981,7 @@ mod tests {
                         Outcome::ProxyStopped
                     })
                 }
-                Request::Launch => anyhow::bail!("隔离测试：启动失败时保留窗口和错误详情"),
+                Request::Launch => smoke_launch(base),
                 other => execute(base, channel, other, progress),
             }
         }
