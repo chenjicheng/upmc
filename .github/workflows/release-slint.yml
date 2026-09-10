@@ -1,10 +1,10 @@
-# Slint 0.5.2 release. Branch/manual runs never publish.
+# Manifest-selected Slint release. Branch/manual runs never publish.
 # Later native promotion must preserve the two original entry documents.
 name: Build Slint updater
 
 on:
   push:
-    tags: ['v0.5.2']
+    tags: ['v*']
     branches: [main, dev]
   workflow_dispatch:
 
@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       publish: ${{ steps.context.outputs.publish }}
+      release_tag: ${{ steps.context.outputs.release_tag }}
     env:
       UPMC_BUILD_ID: ${{ github.sha }}
       UPMC_CHANNEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'stable' }}
@@ -97,7 +98,7 @@ jobs:
     needs: build
     if: >-
       needs.build.outputs.publish == 'true' && github.event_name == 'push' &&
-      github.ref == 'refs/tags/v0.5.2' && github.repository == 'chenjicheng/upmc'
+      github.ref == format('refs/tags/{0}', needs.build.outputs.release_tag) && github.repository == 'chenjicheng/upmc'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

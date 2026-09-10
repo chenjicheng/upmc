@@ -1,10 +1,12 @@
 [package]
 name = "upmc"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 
+[package.metadata.upmc-release]
+predecessor = "0.5.2"
+
 [dependencies]
-tray-icon = { version = "=0.24.2", default-features = false }
 # Native Slint interface; live-preview is deliberately not a default feature.
 slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "accessibility", "unstable-winit-030"] }
 

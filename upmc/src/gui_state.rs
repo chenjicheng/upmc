@@ -37,10 +37,6 @@ pub struct UiState {
     pub percent: u32,
 }
 impl UiState {
-    pub fn launch_window_error(&mut self, error: String) {
-        self.error = error;
-        self.error_job = Some(Job::Launch);
-    }
     pub fn fail_before_start(&mut self, error: String) {
         let restore_proxy = matches!(self.busy, Some(Job::ProxyStart | Job::ProxyStop));
         let previous_proxy = self.previous_proxy;
