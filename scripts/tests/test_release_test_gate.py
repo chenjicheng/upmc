@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -178,6 +179,46 @@ class WorkflowGateTests(unittest.TestCase):
         self.assertIn("release_publication.py publish", publish)
         self.assertNotIn("release_test_gate.py", text.split("\n  publish:", 1)[0])
         self.assertNotIn("continue-on-error", text)
+
+
+class ApiEncodingTests(unittest.TestCase):
+    def fake_gh(self, stdout, stderr=b"", exit_code=0):
+        real_run = subprocess.run
+        def run(_args, **kwargs):
+            # A real child writes exactly the bytes gh would emit. Force a
+            # legacy default decoder in the parent, independently of its host.
+            program = ("import sys; sys.stdout.buffer.write(bytes.fromhex(" + repr(stdout.hex())
+                       + ")); sys.stderr.buffer.write(bytes.fromhex(" + repr(stderr.hex())
+                       + ")); sys.exit(" + str(exit_code) + ")")
+            return real_run([sys.executable, "-c", program], **kwargs)
+        return run
+
+    def test_utf8_json_survives_legacy_parent_locale(self):
+        expected = {"message": "修复发布检查 — 更新器 ✅"}
+        payload = json.dumps(expected, ensure_ascii=False).encode("utf-8")
+        with patch.object(subprocess, "_text_encoding", return_value="cp1252"), \
+             patch.object(gate.subprocess, "run", side_effect=self.fake_gh(payload)):
+            self.assertEqual(gate._api("repos/example/test"), expected)
+
+    def test_invalid_utf8_response_is_a_typed_blocking_error(self):
+        with patch.object(subprocess, "_text_encoding", return_value="cp1252"), \
+             patch.object(gate.subprocess, "run", side_effect=self.fake_gh(b'{"message":"\xff"}')):
+            with self.assertRaisesRegex(gate.ReleaseGateError, "UTF-8"):
+                gate._api("repos/example/test")
+
+    def test_utf8_error_diagnostic_is_preserved(self):
+        with patch.object(subprocess, "_text_encoding", return_value="cp1252"), \
+             patch.object(gate.subprocess, "run", side_effect=self.fake_gh(b"", "访问被拒绝".encode("utf-8"), 1)):
+            with self.assertRaisesRegex(gate.ReleaseGateError, "访问被拒绝"):
+                gate._api("repos/example/test")
+
+    def test_transport_timeout_remains_bounded_and_typed(self):
+        def timeout(args, **kwargs):
+            self.assertEqual(kwargs["timeout"], 45)
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        with patch.object(gate.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(gate.ReleaseGateError):
+                gate.require_green(SHA)
 
 
 if __name__ == "__main__":

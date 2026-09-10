@@ -34,10 +34,17 @@ def _api(endpoint):
     result = subprocess.run(
         ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint,
          "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28"],
-        capture_output=True, text=True, timeout=45,
+        # Decode in the calling thread. Windows subprocess text-mode readers can
+        # otherwise fail in a background thread under the system ANSI code page.
+        capture_output=True, timeout=45,
     )
-    _require(result.returncode == 0, f"GitHub validation lookup failed: {result.stderr.strip()}")
-    return json.loads(result.stdout)
+    try:
+        stdout = result.stdout.decode("utf-8", errors="strict")
+        stderr = result.stderr.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ReleaseGateError("GitHub validation response is not valid UTF-8") from error
+    _require(result.returncode == 0, f"GitHub validation lookup failed: {stderr.strip()}")
+    return json.loads(stdout)
 
 
 def _collection(api, endpoint, field):
