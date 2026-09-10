@@ -49,13 +49,19 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
     ui.set_busy(busy);
     let main_job = matches!(state.busy, Some(Job::Update | Job::Launch));
     ui.set_switches_enabled(!main_job && !state.exit);
-    let main_busy = main_job && elapsed >= Duration::from_millis(300);
+    // Every serialized job blocks the primary action. Keep short saves quiet,
+    // but never leave a long proxy request looking idle and clickable.
+    let main_busy = busy && elapsed >= Duration::from_millis(300);
     ui.set_main_busy(main_busy);
     ui.set_updating(main_busy && state.busy == Some(Job::Update));
     ui.set_launchable(state.ready && !busy);
     ui.set_proxy_on(state.proxy);
     ui.set_proxy_text(
-        if state.proxy {
+        if main_busy && state.busy == Some(Job::ProxyStart) {
+            "正在启用代理"
+        } else if main_busy && state.busy == Some(Job::ProxyStop) {
+            "正在停止代理"
+        } else if state.proxy {
             "已启用"
         } else {
             "未启用"
@@ -89,7 +95,18 @@ fn render_at(ui: &App, state: &UiState, elapsed: Duration) {
     ui.set_scenario(if main_error { 5 } else { 0 });
     ui.set_detail(
         if main_busy {
-            state.progress_detail.clone()
+            if state.progress_detail.is_empty() {
+                match state.busy {
+                    Some(Job::ProxyStart) => "正在启用代理".into(),
+                    Some(Job::ProxyStop) => "正在停止代理".into(),
+                    Some(Job::UdpSettings | Job::ChannelSettings | Job::WindowSettings) => {
+                        "正在保存设置".into()
+                    }
+                    _ => state.status.clone(),
+                }
+            } else {
+                state.progress_detail.clone()
+            }
         } else {
             String::new()
         }
@@ -163,7 +180,21 @@ struct Controller {
     sender: SyncSender<Event>,
     executor: Executor,
 }
-const BUSY_CLOSE_FEEDBACK: &str = "任务进行中，请等待完成后关闭。";
+const BUSY_CLOSE_FEEDBACK: [&str; 4] = [
+    "整合包更新进行中，请等待完成后关闭。",
+    "代理任务进行中，请等待完成后关闭。",
+    "设置保存进行中，请等待完成后关闭。",
+    "PCL 启动进行中，请等待完成后关闭。",
+];
+
+fn busy_close_feedback(job: Job) -> &'static str {
+    BUSY_CLOSE_FEEDBACK[match job {
+        Job::Update => 0,
+        Job::ProxyStart | Job::ProxyStop => 1,
+        Job::UdpSettings | Job::ChannelSettings | Job::WindowSettings => 2,
+        Job::Launch => 3,
+    }]
+}
 
 impl Controller {
     fn submit_switch(&self, control: Control, enabled: bool) {
@@ -198,7 +229,8 @@ impl Controller {
         let switches = self.switches.borrow();
         let proxy = switches.value(Control::Proxy, self.state.borrow().proxy);
         ui.set_proxy_on(proxy);
-        ui.set_proxy_text(if proxy { "已启用" } else { "未启用" }.into());
+        // The switch shows requested intent; render() describes the operation
+        // actually running. A queued opposite intent must not claim completion.
         ui.set_udp_enabled(switches.value(Control::Udp, self.udp.get()));
         ui.set_hide_after_launch(
             switches.value(Control::HideAfterLaunch, self.hide_after_launch.get()),
@@ -248,8 +280,14 @@ impl Controller {
     }
     fn refresh(&self) {
         if let Some(ui) = self.ui.upgrade() {
-            if self.state.borrow().busy.is_none() && ui.get_feedback() == BUSY_CLOSE_FEEDBACK {
-                ui.set_feedback("".into());
+            if BUSY_CLOSE_FEEDBACK.contains(&ui.get_feedback().as_str()) {
+                ui.set_feedback(
+                    self.state
+                        .borrow()
+                        .busy
+                        .map_or("", busy_close_feedback)
+                        .into(),
+                );
             }
             render(&ui, &self.state.borrow());
             let local = version::read_local_version(&self.base);
@@ -358,9 +396,9 @@ impl Controller {
         log.push(line);
     }
     fn request_close(&self) -> bool {
-        if self.state.borrow().busy.is_some() {
+        if let Some(job) = self.state.borrow().busy {
             if let Some(ui) = self.ui.upgrade() {
-                ui.set_feedback(BUSY_CLOSE_FEEDBACK.into());
+                ui.set_feedback(busy_close_feedback(job).into());
             }
             false
         } else {
@@ -581,6 +619,81 @@ fn run_with_executor(base: PathBuf, channel: ChannelConfig, executor: Executor) 
 mod tests {
     use super::*;
     use crate::gui_state::{Job, Outcome};
+    #[test]
+    fn delayed_proxy_job_explains_disabled_launch_and_recovers_on_completion() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let (sender, _) = mpsc::sync_channel(64);
+        let c = launch_controller(&ui, temp.path(), sender);
+        for (job, label, outcome) in [
+            (Job::ProxyStart, "正在启用代理", Outcome::ProxyStarted),
+            (Job::ProxyStop, "正在停止代理", Outcome::ProxyStopped),
+            (
+                Job::ProxyStart,
+                "正在启用代理",
+                Outcome::Failed("HTTP timeout after retries".into()),
+            ),
+        ] {
+            c.state.borrow_mut().ready = true;
+            assert!(c.state.borrow_mut().begin(job));
+            c.state.borrow_mut().progress_detail = "正在获取代理订阅...".into();
+            render_at(&ui, &c.state.borrow(), Duration::from_secs(90));
+            c.paint_switches(&ui);
+            assert!(ui.get_busy() && !ui.get_launchable());
+            assert!(
+                ui.get_main_busy(),
+                "a long job must visibly disable the primary action"
+            );
+            assert!(
+                !ui.get_updating(),
+                "proxy progress must not impersonate pack progress"
+            );
+            assert_eq!(ui.get_action_text(), "请稍候…");
+            assert_eq!(ui.get_detail(), "正在获取代理订阅...");
+            assert_eq!(ui.get_proxy_text(), label);
+            assert!(!c.request_close());
+            assert!(ui.get_feedback().contains("代理"));
+            c.event(Event::Finished(outcome));
+            assert!(!ui.get_busy() && ui.get_launchable());
+            assert!(ui.get_detail().is_empty() && ui.get_feedback().is_empty());
+            assert!(c.request_close());
+        }
+        assert!(
+            c.errors
+                .borrow()
+                .last()
+                .unwrap()
+                .contains("HTTP timeout after retries")
+        );
+    }
+
+    #[test]
+    fn secondary_jobs_have_delayed_activity_even_without_progress_events() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = App::new().unwrap();
+        for (job, expected) in [
+            (Job::ProxyStart, "正在启用代理"),
+            (Job::ProxyStop, "正在停止代理"),
+            (Job::UdpSettings, "正在保存设置"),
+            (Job::ChannelSettings, "正在保存设置"),
+            (Job::WindowSettings, "正在保存设置"),
+        ] {
+            let mut state = UiState::default();
+            state.ready = true;
+            state.begin(job);
+            render_at(&ui, &state, Duration::from_millis(299));
+            assert!(!ui.get_main_busy());
+            assert!(ui.get_detail().is_empty());
+            render_at(&ui, &state, Duration::from_millis(300));
+            assert!(ui.get_main_busy());
+            assert_eq!(ui.get_detail(), expected);
+            state.finish(Outcome::Saved);
+            render_at(&ui, &state, Duration::ZERO);
+            assert!(!ui.get_busy() && ui.get_detail().is_empty());
+        }
+    }
+
     fn automated_native_window_lifecycle(custom_close: bool) {
         use slint::winit_030::WinitWindowAccessor;
         let temp = tempfile::tempdir().unwrap();
