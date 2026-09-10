@@ -1,0 +1,43 @@
+name: Validate updater
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    # Ruleset 13169555 requires this exact name from the GitHub Actions app.
+    name: UPMC tests
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      UPMC_BUILD_ID: ${{ github.sha }}
+      UPMC_CHANNEL: stable
+    steps:
+      - name: Check out the tested commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test publication and release authorization
+        run: python -m unittest discover -s scripts/tests -v
+      - name: Install the validated Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+      - name: Cache locked Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          cache-on-failure: true
+          shared-key: slint-050-windows-2022-rust-1.95.0
+      - name: Build the matching embedded proxy DLL pair
+        run: cargo build --locked --release -p discord-proxy-dll -p force-proxy-dll
+      - name: Test the complete workspace
+        run: cargo test --locked --workspace

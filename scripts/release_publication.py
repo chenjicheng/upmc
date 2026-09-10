@@ -335,6 +335,14 @@ def main():
         if args.command == "validate-source":
             print(f"Validated legacy {version} source at {args.build_id}")
             return 0
+        # This is inside the actual CLI, before Release assets or Pages can be
+        # mutated. A caller cannot bypass it by skipping a workflow-only step.
+        from release_test_gate import ReleaseGateError, require_green
+        try:
+            evidence = require_green(args.build_id)
+        except ReleaseGateError as error:
+            raise PublicationError(f"Required validation blocked publication: {error}") from error
+        print(json.dumps({"required_validation": evidence}))
         descriptor = ensure_release(args.artifact, version, args.tag, args.build_id)
         commit = publish_pages(args.pages, descriptor, args.expected_pages_head)
         print(json.dumps({"pages_commit": commit, "descriptor": descriptor}, indent=2))
