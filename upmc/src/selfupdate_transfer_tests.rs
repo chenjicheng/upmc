@@ -211,6 +211,150 @@ fn fixture_agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
+struct TimeoutFixture {
+    url: String,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<thread::JoinHandle<std::result::Result<Vec<String>, String>>>,
+}
+
+impl TimeoutFixture {
+    fn start() -> Self {
+        use std::sync::{Arc, atomic::AtomicBool};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
+        let worker = thread::spawn(move || Self::serve(listener, &stop).map_err(|e| e.to_string()));
+        Self {
+            url: format!("http://{address}/bridge/dev/version.json"),
+            cancelled,
+            worker: Some(worker),
+        }
+    }
+
+    fn serve(
+        listener: std::net::TcpListener,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<Vec<String>> {
+        use std::{io::ErrorKind, sync::atomic::Ordering};
+        let mut requests = Vec::new();
+        let mut socket = loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Ok(requests);
+            }
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        socket.set_nonblocking(true)?;
+        let mut request = Vec::new();
+        let mut buffer = [0; 512];
+        while !request.ends_with(b"\r\n\r\n") {
+            if cancelled.load(Ordering::Acquire) {
+                return Ok(requests);
+            }
+            match socket.read(&mut buffer) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "client closed before request headers",
+                    ));
+                }
+                Ok(count) => request.extend_from_slice(&buffer[..count]),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                Err(e) => return Err(e),
+            }
+            if request.len() > 16 * 1024 {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "fixture request headers too large",
+                ));
+            }
+        }
+        requests.push(
+            String::from_utf8(request)
+                .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?,
+        );
+        socket.set_nonblocking(false)?;
+        socket.set_write_timeout(Some(Duration::from_millis(500)))?;
+        // Headers establish that the request was accepted before the body-read
+        // timeout begins. Never race that timeout against a response sleep.
+        socket.write_all(&response("200 OK", b"", 2))?;
+        while !cancelled.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(2));
+        }
+        Ok(requests)
+    }
+
+    fn stop(&mut self) -> std::result::Result<Vec<String>, String> {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        let worker = self.worker.take().ok_or("fixture already stopped")?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !worker.is_finished() {
+            if std::time::Instant::now() >= deadline {
+                return Err("timeout fixture did not stop within two seconds".into());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker
+            .join()
+            .map_err(|_| "timeout fixture worker panicked".to_owned())?
+    }
+
+    fn finish(mut self) -> std::result::Result<Vec<String>, String> {
+        self.stop()
+    }
+}
+
+impl Drop for TimeoutFixture {
+    fn drop(&mut self) {
+        if self.worker.is_some() {
+            // Also cancel on early return or assertion unwind. Tests explicitly
+            // finish before assertions so cleanup failures remain test failures.
+            let _ = self.stop();
+        }
+    }
+}
+
+#[test]
+fn transfer_timeout_fixture_cleans_up_after_preconnect_timeout() {
+    let fixture = TimeoutFixture::start();
+    let error = fetch_updater_info_from(&fixture_agent(Duration::ZERO), &fixture.url).unwrap_err();
+    let cleanup = fixture.finish();
+    assert!(
+        matches!(
+            error.downcast_ref::<ureq::Error>(),
+            Some(ureq::Error::Timeout(ureq::Timeout::Global))
+        ),
+        "{error:#}"
+    );
+    assert!(
+        cleanup.unwrap().is_empty(),
+        "zero-budget client should not make a request"
+    );
+}
+
+#[test]
+fn transfer_timeout_fixture_cancels_before_delayed_client_starts() {
+    let fixture = TimeoutFixture::start();
+    // The client is deliberately not scheduled until cleanup has completed.
+    // No sleep or tiny networking deadline determines this ordering.
+    let (start, gate) = std::sync::mpsc::channel::<()>();
+    let client = thread::spawn(move || gate.recv().is_ok());
+    let cleanup = fixture.finish();
+    drop(start);
+    assert!(!client.join().unwrap());
+    assert!(cleanup.unwrap().is_empty());
+}
+
 #[test]
 fn transfer_real_http_retry_preserves_endpoint_and_parses_full_manifest() {
     let body = serde_json::to_vec(&serde_json::json!({"version":"0.4.8","build_id":"a".repeat(40),"size":15,"sha256":"b".repeat(64),"download_url":"https://gh.chenjicheng.cn/https://github.com/chenjicheng/upmc/releases/download/v0.4.8/updater.exe"})).unwrap();
@@ -241,21 +385,108 @@ fn transfer_real_http_retry_preserves_endpoint_and_parses_full_manifest() {
     );
 }
 
-#[test]
-fn transfer_real_http_timeout_is_typed_and_bounded() {
-    let (url, worker) = http_fixture(
-        vec![response("200 OK", b"{}", 2)],
-        Duration::from_millis(250),
-    );
+fn assert_body_timeout(fixture: TimeoutFixture) {
+    let agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(Duration::from_secs(5)))
+        .timeout_recv_body(Some(Duration::from_millis(40)))
+        .build()
+        .into();
     let start = std::time::Instant::now();
-    let error =
-        fetch_updater_info_from(&fixture_agent(Duration::from_millis(40)), &url).unwrap_err();
-    assert!(start.elapsed() < Duration::from_secs(1));
+    let result = fetch_updater_info_from(&agent, &fixture.url);
+    let elapsed = start.elapsed();
+    let cleanup = fixture.finish();
+    let error = result.unwrap_err();
+    assert!(elapsed < Duration::from_secs(5));
+    assert!(
+        matches!(
+            error.downcast_ref::<ureq::Error>(),
+            Some(ureq::Error::Timeout(ureq::Timeout::RecvBody))
+        ),
+        "expected body timeout, not a connect/global timeout or parse error: {error:#}"
+    );
     assert!(
         is_transient_network_error(&error),
-        "timeout lost its transport type: {error:#}"
+        "typed body timeout must remain retryable"
     );
-    assert_eq!(worker.join().unwrap().len(), 1);
+    let requests = cleanup.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("GET /bridge/dev/version.json HTTP/1.1\r\n"));
+}
+
+#[test]
+fn transfer_real_http_timeout_is_typed_and_bounded() {
+    assert_body_timeout(TimeoutFixture::start());
+}
+
+#[test]
+fn transfer_timeout_fixture_delayed_client_still_tests_body_phase() {
+    let fixture = TimeoutFixture::start();
+    let (start, gate) = std::sync::mpsc::channel();
+    let client = thread::spawn(move || {
+        gate.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_body_timeout(fixture);
+    });
+    // Complete another fixture while the real HTTP client is explicitly held
+    // back, rather than depending on a sleep winning a scheduling race.
+    let cleanup = TimeoutFixture::start().finish();
+    let released = start.send(());
+    let client_result = client.join();
+    assert!(cleanup.unwrap().is_empty());
+    released.unwrap();
+    client_result.unwrap();
+}
+
+#[test]
+fn transfer_timeout_fixture_cancels_partial_request() {
+    let fixture = TimeoutFixture::start();
+    let address = fixture
+        .url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
+    let mut socket = std::net::TcpStream::connect(address).unwrap();
+    socket
+        .write_all(b"GET /bridge/dev/version.json HTTP/1.1\r\n")
+        .unwrap();
+    assert!(fixture.finish().unwrap().is_empty());
+}
+
+#[test]
+fn transfer_timeout_fixture_unwind_releases_listener() {
+    let fixture = TimeoutFixture::start();
+    let address = fixture
+        .url
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned();
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _fixture = fixture;
+        std::panic::resume_unwind(Box::new("deliberate fixture assertion unwind"));
+    }));
+    assert!(unwind.is_err());
+    // Rebinding the exact endpoint verifies the worker actually released its
+    // listener during Drop, rather than merely setting a cancellation flag.
+    let _rebound = std::net::TcpListener::bind(address).unwrap();
+}
+
+#[test]
+fn transfer_timeout_fixture_stress_concurrent_early_and_body_timeouts() {
+    thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                for _ in 0..4 {
+                    transfer_timeout_fixture_cleans_up_after_preconnect_timeout();
+                    assert_body_timeout(TimeoutFixture::start());
+                }
+            });
+        }
+    });
 }
 
 #[test]
