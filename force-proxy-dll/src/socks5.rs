@@ -16,7 +16,13 @@ pub unsafe fn wait_for_write(s: SOCKET, timeout_sec: i32) -> bool {
         tv_sec: timeout_sec,
         tv_usec: 0,
     };
-    select(0, std::ptr::null_mut(), &mut set, std::ptr::null_mut(), &mut tv) > 0
+    select(
+        0,
+        std::ptr::null_mut(),
+        &mut set,
+        std::ptr::null_mut(),
+        &mut tv,
+    ) > 0
 }
 
 pub unsafe fn wait_for_read(s: SOCKET, timeout_sec: i32) -> bool {
@@ -27,7 +33,13 @@ pub unsafe fn wait_for_read(s: SOCKET, timeout_sec: i32) -> bool {
         tv_sec: timeout_sec,
         tv_usec: 0,
     };
-    select(0, &mut set, std::ptr::null_mut(), std::ptr::null_mut(), &mut tv) > 0
+    select(
+        0,
+        &mut set,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        &mut tv,
+    ) > 0
 }
 
 pub unsafe fn set_non_blocking(s: SOCKET, non_blocking: bool) -> bool {
@@ -236,8 +248,16 @@ pub unsafe fn init_udp_association(cfg: &ProxyConfig) -> Option<UdpAssociation> 
 
     let mut addr: SOCKADDR_IN = mem::zeroed();
     addr.sin_family = AF_INET as u16;
-    std::ptr::copy_nonoverlapping(resp.as_ptr().add(4), &mut addr.sin_addr as *mut IN_ADDR as *mut u8, 4);
-    std::ptr::copy_nonoverlapping(resp.as_ptr().add(8), &mut addr.sin_port as *mut u16 as *mut u8, 2);
+    std::ptr::copy_nonoverlapping(
+        resp.as_ptr().add(4),
+        &mut addr.sin_addr as *mut IN_ADDR as *mut u8,
+        4,
+    );
+    std::ptr::copy_nonoverlapping(
+        resp.as_ptr().add(8),
+        &mut addr.sin_port as *mut u16 as *mut u8,
+        2,
+    );
 
     Some(UdpAssociation {
         proxy_socket,
@@ -269,6 +289,10 @@ pub unsafe fn encapsulate_udp(buf: *const u8, len: usize, to: &SOCKADDR_IN) -> V
 
 /// Extract the original sender address from a SOCKS5 UDP header.
 pub unsafe fn extract_udp_sender(buf: *const u8, from: *mut SOCKADDR_IN) {
-    std::ptr::copy_nonoverlapping(buf.add(4), &mut (*from).sin_addr as *mut IN_ADDR as *mut u8, 4);
+    std::ptr::copy_nonoverlapping(
+        buf.add(4),
+        &mut (*from).sin_addr as *mut IN_ADDR as *mut u8,
+        4,
+    );
     std::ptr::copy_nonoverlapping(buf.add(8), &mut (*from).sin_port as *mut u16 as *mut u8, 2);
 }

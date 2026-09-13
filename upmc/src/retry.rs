@@ -13,7 +13,7 @@
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 
 /// 执行一个操作，失败时自动重试。
 ///
@@ -49,10 +49,7 @@ where
         match f() {
             Ok(value) => {
                 if attempt > 1 {
-                    eprintln!(
-                        "[重试] {} 在第 {} 次尝试时成功",
-                        operation_name, attempt
-                    );
+                    eprintln!("[重试] {} 在第 {} 次尝试时成功", operation_name, attempt);
                 }
                 return Ok(value);
             }

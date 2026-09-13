@@ -7,7 +7,7 @@
 //   3. 清空 mods/ 目录（packwiz 会重新同步正确的模组）
 // ============================================================
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
@@ -29,11 +29,7 @@ use crate::retry;
 /// ```
 ///
 /// `-noprofile` 表示不写入启动器 profile（由 PCL2 自己管理）。
-pub fn install_fabric(
-    base_dir: &Path,
-    mc_version: &str,
-    fabric_version: &str,
-) -> Result<()> {
+pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -> Result<()> {
     let java = config::find_java()?;
     let installer_jar = base_dir.join(config::FABRIC_INSTALLER_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
@@ -225,9 +221,7 @@ pub fn clean_mods_dir(base_dir: &Path) -> Result<()> {
         let path = entry.path();
 
         // 只删除 .jar 文件，best-effort（文件可能被游戏进程锁定）
-        if path.is_file()
-            && path.extension().is_some_and(|ext| ext == "jar")
-        {
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "jar") {
             if let Err(e) = fs::remove_file(&path) {
                 eprintln!("删除模组失败（已跳过）: {}: {e}", path.display());
             }
@@ -267,16 +261,14 @@ pub fn fix_version_isolation(base_dir: &Path, version_tag: &str) -> Result<()> {
 
     if setup_ini.exists() {
         // 读取现有文件并替换隔离设置
-        let content = fs::read_to_string(&setup_ini)
-            .context("读取版本级 Setup.ini 失败")?;
+        let content = fs::read_to_string(&setup_ini).context("读取版本级 Setup.ini 失败")?;
 
         if content.contains("VersionArgumentIndieV2:True") {
             let new_content = content.replace(
                 "VersionArgumentIndieV2:True",
                 "VersionArgumentIndieV2:False",
             );
-            fs::write(&setup_ini, &new_content)
-                .context("写入版本级 Setup.ini 失败")?;
+            fs::write(&setup_ini, &new_content).context("写入版本级 Setup.ini 失败")?;
         } else if !content.contains("VersionArgumentIndieV2:") {
             // 文件存在但没有这个 key，追加
             let mut new_content = content;
@@ -284,14 +276,12 @@ pub fn fix_version_isolation(base_dir: &Path, version_tag: &str) -> Result<()> {
                 new_content.push('\n');
             }
             new_content.push_str("VersionArgumentIndieV2:False\n");
-            fs::write(&setup_ini, &new_content)
-                .context("写入版本级 Setup.ini 失败")?;
+            fs::write(&setup_ini, &new_content).context("写入版本级 Setup.ini 失败")?;
         }
         // 如果已经是 False 就不用改
     } else {
         // 文件还不存在（Fabric 安装后但 PCL2 还没运行过），提前创建
-        fs::create_dir_all(&pcl_dir)
-            .context("创建版本级 PCL 目录失败")?;
+        fs::create_dir_all(&pcl_dir).context("创建版本级 PCL 目录失败")?;
         fs::write(&setup_ini, "VersionArgumentIndieV2:False\n")
             .context("写入版本级 Setup.ini 失败")?;
     }
@@ -347,8 +337,8 @@ fn download_vanilla_version_inner(mc_dir: &Path, mc_version: &str) -> Result<()>
         .read_to_string()
         .context("读取版本清单失败")?;
 
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_str)
-        .context("解析版本清单 JSON 失败")?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_str).context("解析版本清单 JSON 失败")?;
 
     // 2. 找到目标版本的 URL
     let versions = manifest["versions"]
@@ -378,10 +368,9 @@ fn download_vanilla_version_inner(mc_dir: &Path, mc_version: &str) -> Result<()>
 
     // 4. 从 version JSON 中提取 client jar URL 并下载
     if !ver_jar_path.exists() {
-        let ver_json_str = fs::read_to_string(&ver_json_path)
-            .context("读取 version JSON 失败")?;
-        let ver_json: serde_json::Value = serde_json::from_str(&ver_json_str)
-            .context("解析 version JSON 失败")?;
+        let ver_json_str = fs::read_to_string(&ver_json_path).context("读取 version JSON 失败")?;
+        let ver_json: serde_json::Value =
+            serde_json::from_str(&ver_json_str).context("解析 version JSON 失败")?;
 
         let client_url = ver_json["downloads"]["client"]["url"]
             .as_str()

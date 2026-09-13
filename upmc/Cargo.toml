@@ -1,10 +1,10 @@
 [package]
 name = "upmc"
-version = "0.5.5"
+version = "0.5.6"
 edition = "2024"
 
 [package.metadata.upmc-release]
-predecessor = "0.5.4"
+predecessor = "0.5.5"
 
 [dependencies]
 # Native Slint interface; live-preview is deliberately not a default feature.
