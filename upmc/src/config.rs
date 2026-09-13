@@ -15,8 +15,7 @@ use std::process::Command;
 // ── 远程配置 ──
 
 /// 远程 server.json 的 URL（GitHub Pages 托管，packwiz 仓库）
-pub const REMOTE_SERVER_JSON_URL: &str =
-    "https://update.mc.chenjicheng.cn/server.json";
+pub const REMOTE_SERVER_JSON_URL: &str = "https://update.mc.chenjicheng.cn/server.json";
 
 /// 允许远程配置引用的下载域名后缀。
 ///
@@ -34,13 +33,11 @@ pub const TRUSTED_DOWNLOAD_HOST_SUFFIXES: &[&str] = &[
 
 /// 更新器版本信息 URL — 稳定通道（GitHub Pages 托管，upmc 仓库）
 /// 返回 JSON: { "version": "x.y.z", "download_url": "..." }
-pub const UPDATER_VERSION_URL: &str =
-    "https://upmc.chenjicheng.cn/bridge/version.json";
+pub const UPDATER_VERSION_URL: &str = "https://upmc.chenjicheng.cn/bridge/version.json";
 
 /// 更新器版本信息 URL — 开发通道
 /// 返回 JSON: { "version": "x.y.z", "download_url": "...", "build_id": "a1b2c3d" }
-pub const UPDATER_DEV_VERSION_URL: &str =
-    "https://upmc.chenjicheng.cn/bridge/dev/version.json";
+pub const UPDATER_DEV_VERSION_URL: &str = "https://upmc.chenjicheng.cn/bridge/dev/version.json";
 
 // ── 更新通道 ──
 
@@ -163,16 +160,15 @@ pub const INSTALL_DIR_NAME: &str = "CJC整合包";
 ///
 /// 例如：`C:\Users\<用户>\Documents\CJC整合包\`
 pub fn get_install_dir() -> PathBuf {
-    let doc_dir = dirs::document_dir()
-        .unwrap_or_else(|| {
-            // 极端情况下无法获取文档文件夹，回退到 exe 所在目录
-            eprintln!("警告: 无法获取文档文件夹，回退到 exe 目录");
-            std::env::current_exe()
-                .expect("无法获取 exe 路径")
-                .parent()
-                .expect("无法获取 exe 所在目录")
-                .to_path_buf()
-        });
+    let doc_dir = dirs::document_dir().unwrap_or_else(|| {
+        // 极端情况下无法获取文档文件夹，回退到 exe 所在目录
+        eprintln!("警告: 无法获取文档文件夹，回退到 exe 目录");
+        std::env::current_exe()
+            .expect("无法获取 exe 路径")
+            .parent()
+            .expect("无法获取 exe 所在目录")
+            .to_path_buf()
+    });
     doc_dir.join(INSTALL_DIR_NAME)
 }
 
@@ -390,7 +386,10 @@ pub fn find_java() -> Result<PathBuf> {
     }
 
     // 2. PATH（使用 where 命令查找）
-    if let Ok(output) = Command::new("where").arg("java").creation_flags(CREATE_NO_WINDOW).output()
+    if let Ok(output) = Command::new("where")
+        .arg("java")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -436,7 +435,8 @@ mod user_settings_tests {
         assert!(settings.hide_after_launch);
         assert!(!settings.proxy_enabled && !settings.proxy_udp);
         save_user_settings(base.path(), &settings).unwrap();
-        let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(stored["hide_after_launch"], true);
         assert!(load_user_settings(base.path()).hide_after_launch);
     }

@@ -311,7 +311,10 @@ mod tests {
         assert!(!target.with_extension("exe.old").exists());
         assert!(!helper.exists());
         assert!(target.exists() && unrelated.exists());
-        assert!(target.with_extension("exe.update.lock").exists());
+        assert!(
+            !target.with_extension("exe.update.lock").exists(),
+            "named-mutex contract must not leave a persistent lock file"
+        );
     }
     #[test]
     fn wrong_helper_is_rejected() {
@@ -337,15 +340,11 @@ mod tests {
         for case in 0..7 {
             let (_dir, target, helper) = fixture();
             let proof = Proof::capture(&target, &helper).unwrap();
-            let mut lock = None;
             match case {
                 1 => fs::write(target.with_extension("exe.old"), b"MZchanged").unwrap(),
                 2 => fs::write(&target, b"MZchanged").unwrap(),
                 3 => fs::write(target.with_extension("exe.new"), b"MZstage").unwrap(),
                 4 => fs::write(target.with_extension("exe.old.pending"), b"MZpending").unwrap(),
-                5 => {
-                    lock = Some(acquire_update_lock(&target, 1, Duration::ZERO).unwrap());
-                }
                 6 => fs::write(
                     target
                         .parent()
@@ -356,9 +355,31 @@ mod tests {
                 .unwrap(),
                 _ => {}
             }
-            assert!(proof.cleanup(case != 0).is_err(), "case {case}");
+            // Case 5 models a live transaction. The lock is held from another
+            // thread so contention is real for both a file lock and a named
+            // mutex, without depending on same-thread reentrancy semantics.
+            let result = if case == 5 {
+                let lock_target = target.clone();
+                let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+                let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+                std::thread::scope(|scope| {
+                    scope.spawn(move || {
+                        let _guard = acquire_update_lock(&lock_target, 1, Duration::ZERO).unwrap();
+                        held_tx.send(()).unwrap();
+                        // Bounded so a panic in the cleanup attempt cannot
+                        // leave the scope waiting on this thread forever.
+                        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                    });
+                    held_rx.recv().unwrap();
+                    let result = proof.cleanup(true);
+                    release_tx.send(()).unwrap();
+                    result
+                })
+            } else {
+                proof.cleanup(case != 0)
+            };
+            assert!(result.is_err(), "case {case}");
             assert!(target.with_extension("exe.old").exists() && helper.exists());
-            drop(lock);
         }
     }
 }

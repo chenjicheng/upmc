@@ -20,12 +20,11 @@ use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::System::Environment::SetEnvironmentVariableW;
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR};
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-type DWriteCreateFactoryFn =
-    unsafe extern "system" fn(u32, *const c_void, *mut *mut c_void) -> i32;
+type DWriteCreateFactoryFn = unsafe extern "system" fn(u32, *const c_void, *mut *mut c_void) -> i32;
 
 struct ProxyState {
     original_fn: DWriteCreateFactoryFn,
@@ -69,7 +68,11 @@ unsafe fn initialize() -> ProxyState {
     let len = GetSystemDirectoryW(sys_path.as_mut_ptr(), 260) as usize;
 
     let suffix = to_wide("\\DWrite.dll");
-    core::ptr::copy_nonoverlapping(suffix.as_ptr(), sys_path.as_mut_ptr().add(len), suffix.len());
+    core::ptr::copy_nonoverlapping(
+        suffix.as_ptr(),
+        sys_path.as_mut_ptr().add(len),
+        suffix.len(),
+    );
 
     let original_dll = LoadLibraryW(sys_path.as_ptr());
     if original_dll == 0 {

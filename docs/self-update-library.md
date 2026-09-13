@@ -12,7 +12,7 @@ The raw download is named `updater.exe`, while the library's plain-file extracti
 
 ## Transaction and recovery
 
-The existing persistent transaction lock covers installation and candidate supervision. The canonical target path is captured before any replacement. Before invoking the library, UPMC independently copies and verifies the previous executable at `.exe.old`. This is required because `self-replace` can rename the running image before a subsequent operation fails. Installation failure must not assume the canonical target still exists.
+The per-target transaction lock (named mutex plus transient legacy-file guard) covers installation and candidate supervision. The canonical target path is captured before any replacement. Before invoking the library, UPMC independently copies and verifies the previous executable at `.exe.old`. This is required because `self-replace` can rename the running image before a subsequent operation fails. Installation failure must not assume the canonical target still exists.
 
 Immediately before the library's installation step, the successful binary-verification callback permanently marks the current process as possibly relocated. Subsequent self-update and generic cleanup operations in that process are forbidden, including a second guard after acquiring the transaction lock. This state is intentionally conservative: an installation error after the callback may have occurred before the first rename, but only an explicit restart clears the guard.
 

@@ -35,6 +35,13 @@ const REPLACEMENT_ATTEMPTS: usize = 30;
 const REPLACEMENT_RETRY_DELAY: Duration = Duration::from_secs(1);
 const HEALTH_CHECK_ATTEMPTS: usize = 300;
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+/// Bounded window for the old 0.5.x parent to release its legacy file lock
+/// after the candidate acknowledges health. Sleeps only between transient
+/// sharing/lock-contention failures; permanent errors stop immediately.
+#[cfg(windows)]
+const DEFERRED_LEGACY_LOCK_CLEANUP_ATTEMPTS: usize = 120;
+#[cfg(windows)]
+const DEFERRED_LEGACY_LOCK_CLEANUP_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ExecutableIdentity {
@@ -364,8 +371,8 @@ mod fallback_regression_tests {
         cleanup_self_update_artifacts(&target).unwrap();
         assert!(!backup.exists());
         assert!(
-            target.with_extension("exe.update.lock").exists(),
-            "lock inode must persist across sessions"
+            !target.with_extension("exe.update.lock").exists(),
+            "named-mutex contract must not leave a persistent lock file"
         );
     }
 
@@ -1181,6 +1188,64 @@ fn startup_health_ack_from(args: &[String], executable: &Path) -> Result<Option<
     }
 }
 
+/// Acknowledge the candidate first, then remove only a stale, validated legacy
+/// `exe.update.lock` for the incoming 0.5.x library flow.
+///
+/// The callback is always invoked before any filesystem work and its result is
+/// returned unchanged on failure. Cleanup is bounded and error-tolerant: an old
+/// holder still present retains the lock, and the committed acknowledgment is
+/// never suppressed. Helper, backup and staging artifacts are owned by
+/// `legacy_cleanup::ParentProof` and are never touched here.
+#[cfg(windows)]
+fn after_ack_deferred_legacy_lock_cleanup(
+    target: &Path,
+    acknowledge: impl FnOnce() -> bool,
+    attempts: usize,
+    delay: Duration,
+) -> bool {
+    if !acknowledge() {
+        return false;
+    }
+    if let Err(error) = library::ensure_process_can_update() {
+        report_deferred_legacy_lock_cleanup(&error, target, "process mutated before cleanup");
+        return true;
+    }
+    match transaction_lock::acquire(target, attempts, delay) {
+        Ok(guard) => {
+            // Re-check immediately after acquiring protection, matching the
+            // existing update and cleanup ordering.
+            if let Err(error) = library::ensure_process_can_update() {
+                report_deferred_legacy_lock_cleanup(
+                    &error,
+                    target,
+                    "process mutated after protection",
+                );
+            }
+            drop(guard);
+        }
+        Err(error) => {
+            report_deferred_legacy_lock_cleanup(
+                &error,
+                target,
+                "legacy update lock retained after bounded cleanup",
+            );
+        }
+    }
+    true
+}
+
+#[cfg(windows)]
+fn report_deferred_legacy_lock_cleanup(error: &anyhow::Error, target: &Path, reason: &str) {
+    crate::observability::event(
+        "selfupdate.health.lock_cleanup_retained",
+        reason,
+        format!("{error:#}"),
+        target.display(),
+        "retain legacy lock; acknowledgment already committed",
+        std::process::id(),
+    );
+}
+
 /// Start a lightweight watcher that acknowledges only after this process owns
 /// a visible top-level window. This places the health boundary after NWG has
 /// initialized and built the application UI, without making GUI code aware of
@@ -1197,11 +1262,40 @@ pub fn acknowledge_health_when_window_ready(ack: StartupHealthAck) {
             )
         };
         #[cfg(windows)]
-        legacy_cleanup::after_ack(
-            legacy_cleanup::ParentProof::capture(),
-            acknowledge,
-            legacy_cleanup::ParentProof::finish,
-        );
+        {
+            // Capture the installation path before any future executable
+            // mutation so the deferred cleanup keys on the stable target.
+            let target = current_exe_path();
+            let acknowledge = move || -> bool {
+                match &target {
+                    Ok(target) => after_ack_deferred_legacy_lock_cleanup(
+                        target,
+                        acknowledge,
+                        DEFERRED_LEGACY_LOCK_CLEANUP_ATTEMPTS,
+                        DEFERRED_LEGACY_LOCK_CLEANUP_DELAY,
+                    ),
+                    Err(error) => {
+                        // A candidate must still report health; the legacy lock
+                        // may simply remain for a later startup cleanup.
+                        let sent = acknowledge();
+                        crate::observability::event(
+                            "selfupdate.health.lock_cleanup_target_failed",
+                            "cannot resolve candidate path for deferred legacy lock cleanup",
+                            format!("{error:#}"),
+                            "startup health",
+                            "acknowledgment already committed; legacy lock may remain",
+                            std::process::id(),
+                        );
+                        sent
+                    }
+                }
+            };
+            legacy_cleanup::after_ack(
+                legacy_cleanup::ParentProof::capture(),
+                acknowledge,
+                legacy_cleanup::ParentProof::finish,
+            );
+        }
         #[cfg(not(windows))]
         acknowledge();
     });
@@ -1757,6 +1851,10 @@ mod bridge_tests;
 #[path = "selfupdate_helper_regression_tests.rs"]
 mod helper_regression_tests;
 
+#[cfg(all(test, windows))]
+#[path = "selfupdate/named_mutex_tests.rs"]
+mod named_mutex_tests;
+
 fn restart_command(path: &Path, channel: Option<UpdateChannel>) -> Command {
     let mut command = Command::new(path);
     if let Some(channel) = channel {
@@ -1963,8 +2061,23 @@ fn finish_health_supervision(ack: &StartupHealthAck, result: Result<()>) -> Resu
     result
 }
 
-/// The persistent file is never unlinked: every process must lock the same inode.
-/// File ownership releases the OS lock on every return/unwind/process exit.
+#[cfg(windows)]
+fn acquire_update_lock(
+    target: &Path,
+    attempts: usize,
+    delay: Duration,
+) -> Result<transaction_lock::TransactionGuard> {
+    transaction_lock::acquire(target, attempts, delay)
+}
+
+#[cfg(all(test, windows))]
+fn update_transaction_mutex_name(target: &Path) -> Result<String> {
+    transaction_lock::mutex_name(target)
+}
+
+/// Non-Windows builds retain the historical file lock; the shipped updater is
+/// Windows-only and the named-mutex contract is validated there.
+#[cfg(not(windows))]
 fn acquire_update_lock(target: &Path, attempts: usize, delay: Duration) -> Result<fs::File> {
     let path = target.with_extension("exe.update.lock");
     match fs::symlink_metadata(&path) {
@@ -3219,3 +3332,5 @@ mod transfer_tests;
 mod legacy_cleanup;
 #[path = "selfupdate_library.rs"]
 mod library;
+#[cfg(windows)]
+mod transaction_lock;

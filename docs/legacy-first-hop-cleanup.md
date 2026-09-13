@@ -6,13 +6,13 @@ A candidate launched by an older `upmc-update-helper*.exe` can clean the incomin
 
 The candidate opens its parent with query and synchronization rights before acknowledging health, checks the recognized canonical same-directory helper image and parent creation order, and retains that exact native handle until waiting finishes. Ordinary and `self_update` parents are ignored. Failure to capture a proof is logged and does not suppress the existing health acknowledgment.
 
-The proof records volume/file IDs and executable size/SHA256 for the candidate, rollback backup, and helper. The helper must match the backup contents. Cleanup requires a signaled parent handle with exit code zero, acquires the persistent update transaction lock, and rechecks every identity. New `.exe.new`, `.exe.old.pending`, or any other recognized helper causes retention. The exact helper is removed first; if its image is still locked, the backup is retained. Cleanup never scans away unrelated files or library-owned self-replacement artifacts, and never removes the persistent lock.
+The proof records volume/file IDs and executable size/SHA256 for the candidate, rollback backup, and helper. The helper must match the backup contents. Cleanup requires a signaled parent handle with exit code zero, acquires the per-target transaction lock (named mutex plus transient legacy guard), and rechecks every identity. New `.exe.new`, `.exe.old.pending`, or any other recognized helper causes retention. The exact helper is removed first; if its image is still locked, the backup is retained. Cleanup never scans away unrelated files or library-owned self-replacement artifacts. The transaction guard removes only a validated, empty, non-reparse legacy `exe.update.lock`; a held, nonempty, reparse, or directory item is retained.
 
 Timeout, exit-query failure, nonzero exit, lock contention, changed identities, and filesystem failures retain remaining artifacts with a structured diagnostic. The wait budget is 120 seconds on the existing background health watcher.
 
 ## Integration dependency
 
-The concurrent library migration must call its `library::ensure_process_can_update()` guard immediately after this module obtains the transaction lock. That module is not present in this branch's baseline. This prevents an already-relocated process from applying a deferred receipt even if other file checks would pass. Both update implementations use the existing persistent lock.
+The concurrent library migration must call its `library::ensure_process_can_update()` guard immediately after this module obtains the transaction lock. That module is not present in this branch's baseline. This prevents an already-relocated process from applying a deferred receipt even if other file checks would pass. Both update implementations use the same per-target named-mutex transaction lock with a transient legacy-file guard, so an old 0.4.8-0.5.5 holder still excludes new work while no persistent lock file remains.
 
 ## Validation evidence
 

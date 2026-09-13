@@ -23,7 +23,7 @@ pub struct ProxyConfig {
     pub timeout: u32, // seconds
     pub login: String,
     pub password: String,
-    pub udp: bool,    // 是否劫持 UDP 流量
+    pub udp: bool, // 是否劫持 UDP 流量
 }
 
 static CONFIG: OnceLock<ProxyConfig> = OnceLock::new();
@@ -110,8 +110,13 @@ pub unsafe fn call_real_ioctlsocket(s: SOCKET, cmd: c_int, argp: *mut u32) -> c_
 unsafe fn is_udp_socket(s: SOCKET) -> bool {
     let mut val: i32 = 0;
     let mut len: i32 = mem::size_of::<i32>() as i32;
-    if getsockopt(s, SOL_SOCKET as i32, SO_TYPE as i32, &mut val as *mut _ as *mut u8, &mut len)
-        != 0
+    if getsockopt(
+        s,
+        SOL_SOCKET as i32,
+        SO_TYPE as i32,
+        &mut val as *mut _ as *mut u8,
+        &mut len,
+    ) != 0
     {
         return false;
     }
@@ -170,15 +175,15 @@ unsafe extern "system" fn detour_connect(
     socks5::connect_through_socks5(s, addr, cfg(), is_non_blocking(s))
 }
 
-unsafe extern "system" fn detour_bind(
-    s: SOCKET,
-    addr: *const SOCKADDR,
-    namelen: c_int,
-) -> c_int {
+unsafe extern "system" fn detour_bind(s: SOCKET, addr: *const SOCKADDR, namelen: c_int) -> c_int {
     if cfg().udp && is_udp_socket(s) {
         // Check + insert under one logical operation to avoid TOCTOU race.
         // Lock is released during the blocking init_udp_association call.
-        let needs_assoc = !state().lock().unwrap().udp_assoc.contains_key(&(s as usize));
+        let needs_assoc = !state()
+            .lock()
+            .unwrap()
+            .udp_assoc
+            .contains_key(&(s as usize));
         if needs_assoc {
             if let Some(entry) = socks5::init_udp_association(cfg()) {
                 state().lock().unwrap().udp_assoc.insert(s as usize, entry);
@@ -209,8 +214,7 @@ unsafe extern "system" fn detour_sendto(
 ) -> c_int {
     if !to.is_null() && !is_multicast(to) {
         if let Some(entry) = get_udp_assoc(s) {
-            let encap =
-                socks5::encapsulate_udp(buf, len as usize, &*(to as *const SOCKADDR_IN));
+            let encap = socks5::encapsulate_udp(buf, len as usize, &*(to as *const SOCKADDR_IN));
             return (REAL_SENDTO.unwrap())(
                 s,
                 encap.as_ptr(),
@@ -244,11 +248,7 @@ unsafe extern "system" fn detour_recvfrom(
     received
 }
 
-unsafe extern "system" fn detour_ioctlsocket(
-    s: SOCKET,
-    cmd: c_int,
-    argp: *mut u32,
-) -> c_int {
+unsafe extern "system" fn detour_ioctlsocket(s: SOCKET, cmd: c_int, argp: *mut u32) -> c_int {
     if cmd == FIONBIO as i32 {
         let mut st = state().lock().unwrap();
         if *argp != 0 {
@@ -260,11 +260,7 @@ unsafe extern "system" fn detour_ioctlsocket(
     (REAL_IOCTLSOCKET.unwrap())(s, cmd, argp)
 }
 
-unsafe extern "system" fn detour_wsa_event_select(
-    s: SOCKET,
-    event: HANDLE,
-    events: i32,
-) -> c_int {
+unsafe extern "system" fn detour_wsa_event_select(s: SOCKET, event: HANDLE, events: i32) -> c_int {
     {
         let mut st = state().lock().unwrap();
         if event != 0 && events != 0 {
@@ -415,7 +411,11 @@ pub unsafe fn init() {
     install_hook!("sendto", detour_sendto, REAL_SENDTO);
     install_hook!("recvfrom", detour_recvfrom, REAL_RECVFROM);
     install_hook!("ioctlsocket", detour_ioctlsocket, REAL_IOCTLSOCKET);
-    install_hook!("WSAEventSelect", detour_wsa_event_select, REAL_WSA_EVENT_SELECT);
+    install_hook!(
+        "WSAEventSelect",
+        detour_wsa_event_select,
+        REAL_WSA_EVENT_SELECT
+    );
     install_hook!("WSASendTo", detour_wsa_send_to, REAL_WSA_SEND_TO);
     install_hook!("WSARecvFrom", detour_wsa_recv_from, REAL_WSA_RECV_FROM);
 

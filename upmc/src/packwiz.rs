@@ -11,7 +11,7 @@
 //   4. 全程自动，无需用户交互
 // ============================================================
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;

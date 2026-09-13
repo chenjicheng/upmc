@@ -8,7 +8,7 @@
 //   4. 启动/停止 Xray 进程（本地 SOCKS5 代理）
 // ============================================================
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -87,7 +87,10 @@ pub fn download_or_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Re
     // 通过 GitHub 镜像下载
     let download_url = format!("{}{}", config::GITHUB_PROXY, asset.browser_download_url);
     let expected_sha256 = github_asset_sha256(asset.digest.as_deref())?;
-    on_progress(Progress::new(10, format!("正在下载 Xray {}...", release.tag_name)));
+    on_progress(Progress::new(
+        10,
+        format!("正在下载 Xray {}...", release.tag_name),
+    ));
 
     let zip_path = xray_dir.join("xray-download.zip");
     bootstrap::download_file_verified(
@@ -308,7 +311,10 @@ fn test_socks5_connect(
     let mut reply = [0u8; 10];
     stream.read_exact(&mut reply)?;
     if reply[0] != 0x05 || reply[1] != 0x00 {
-        bail!("SOCKS5 CONNECT 到 {target_host}:{target_port} 失败 (REP={})", reply[1]);
+        bail!(
+            "SOCKS5 CONNECT 到 {target_host}:{target_port} 失败 (REP={})",
+            reply[1]
+        );
     }
 
     Ok(())
@@ -524,8 +530,17 @@ mod tests {
         let json = generate_config(&cfg, 10808);
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(parsed["inbounds"][0]["port"], 10808);
-        assert_eq!(parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["id"], "test-uuid");
-        assert_eq!(parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"], "xtls-rprx-vision");
-        assert_eq!(parsed["outbounds"][0]["streamSettings"]["realitySettings"]["publicKey"], "PUBKEY");
+        assert_eq!(
+            parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["id"],
+            "test-uuid"
+        );
+        assert_eq!(
+            parsed["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"],
+            "xtls-rprx-vision"
+        );
+        assert_eq!(
+            parsed["outbounds"][0]["streamSettings"]["realitySettings"]["publicKey"],
+            "PUBKEY"
+        );
     }
 }
