@@ -168,13 +168,15 @@ class ReleaseTests(Fixtures):
 
     def test_existing_release_bytes_are_verified_against_ci_artifact(self):
         with patch.object(subprocess, "run", self.gh):
-            self.assertEqual(pub.ensure_release(self.artifact, VERSION, TAG, self.sha), self.descriptor())
+            self.assertEqual(pub.ensure_release(self.artifact, VERSION, TAG, self.sha),
+                             dict(self.descriptor(), download_url=pub.PROXY_PREFIX + URL))
         self.assertFalse(any(call[1:3] == ["release", "create"] for call in self.calls))
 
     def test_missing_release_is_created_then_downloaded_and_verified(self):
         self.exists = False
         with patch.object(subprocess, "run", self.gh):
-            self.assertEqual(pub.ensure_release(self.artifact, VERSION, TAG, self.sha), self.descriptor())
+            self.assertEqual(pub.ensure_release(self.artifact, VERSION, TAG, self.sha),
+                             dict(self.descriptor(), download_url=pub.PROXY_PREFIX + URL))
         creation = next(c for c in self.calls if c[1:3] == ["release", "create"])
         self.assertIn("--verify-tag", creation)
         self.assertNotIn("--clobber", creation)

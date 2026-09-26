@@ -19,6 +19,12 @@ use std::process::Command;
 use crate::config;
 use crate::retry;
 
+// Pin the actual installer as well as its bootstrap. Java's default updater
+// otherwise contacts GitHub directly and bypasses the configured proxy.
+const INSTALLER_URL: &str =
+    "https://github.com/packwiz/packwiz-installer/releases/download/v0.5.14/packwiz-installer.jar";
+const INSTALLER_SHA256: &str = "c9f646908d340d84773948a9a7d98bc1dae250d35e1016dc6e2b8459760b5598";
+
 /// 调用 packwiz-installer-bootstrap 同步模组和配置。
 ///
 /// 等效于命令：
@@ -41,6 +47,19 @@ pub fn sync_modpack(base_dir: &Path, pack_url: &str, first_install: bool) -> Res
     let workspace = crate::managed_mods::prepare_workspace(base_dir)?;
 
     crate::java::validate_installer_jar(&bootstrap_jar, "Packwiz")?;
+
+    let installer =
+        crate::managed_mods::safe_path(base_dir, Path::new("updater/packwiz-installer.jar"))?;
+    if crate::bootstrap::verify_sha256(&installer, INSTALLER_SHA256).is_err() {
+        crate::bootstrap::download_file_verified(
+            INSTALLER_URL,
+            &installer,
+            INSTALLER_SHA256,
+            &|_| {},
+            80,
+            80,
+        )?;
+    }
 
     // 前置验证 Java 可用（确定性失败，不进入重试循环）
     verify_java(&java)?;
@@ -73,8 +92,19 @@ fn run_packwiz_installer(
         .env_remove("_JAVA_OPTIONS")
         .arg("-jar")
         // ASCII relative JAR path preserves the 0.5.7 native path fix.
-        .arg(Path::new("..").join(bootstrap_jar.file_name().context("Packwiz 安装器无文件名")?))
+        .arg(
+            Path::new("..").join(
+                bootstrap_jar
+                    .file_name()
+                    .context("Packwiz 安装器无文件名")?,
+            ),
+        )
         .arg("-g") // 无头模式（不弹 GUI）
+        .args([
+            "--bootstrap-no-update",
+            "--bootstrap-main-jar",
+            "../packwiz-installer.jar",
+        ])
         .arg("-s")
         .arg("client") // 客户端模式
         .args(["--pack-folder", ".", "--multimc-folder", "."])
@@ -251,6 +281,12 @@ mod tests {
         );
         assert!(!root.join("packwiz-path-probe.txt").exists());
         assert!(!root.join(".minecraft/packwiz-path-probe.txt").exists());
+        let args = std::fs::read_to_string(workspace.join("installer-args.txt")).unwrap();
+        assert!(
+            args.contains("--bootstrap-no-update"),
+            "Java must not download an unproxied installer: {args}"
+        );
+        assert!(args.contains("--bootstrap-main-jar\n../packwiz-installer.jar"));
     }
 
     #[test]

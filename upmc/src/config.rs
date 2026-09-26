@@ -275,9 +275,17 @@ pub fn github_proxy_url(value: &str) -> String {
             && url.username().is_empty()
             && url.password().is_none()
             && url.port().is_none()
-            && matches!(url.host_str(), Some("github.com" | "api.github.com"
-                | "raw.githubusercontent.com" | "objects.githubusercontent.com"
-                | "release-assets.githubusercontent.com" | "codeload.github.com"))
+            && matches!(
+                url.host_str(),
+                Some(
+                    "github.com"
+                        | "api.github.com"
+                        | "raw.githubusercontent.com"
+                        | "objects.githubusercontent.com"
+                        | "release-assets.githubusercontent.com"
+                        | "codeload.github.com"
+                )
+            )
         {
             return format!("{GITHUB_PROXY}{url}");
         }
@@ -286,6 +294,37 @@ pub fn github_proxy_url(value: &str) -> String {
 }
 
 pub const MANAGED_JAVA_DIR: &str = "updater/java-21";
+
+#[cfg(test)]
+mod github_proxy_tests {
+    use super::*;
+
+    #[test]
+    fn github_downloads_are_proxied_once_and_foreign_urls_are_preserved() {
+        for host in [
+            "github.com",
+            "api.github.com",
+            "raw.githubusercontent.com",
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+            "codeload.github.com",
+        ] {
+            let url = format!("https://{host}/owner/repo?download=1");
+            let expected = format!("{GITHUB_PROXY}{url}");
+            assert_eq!(github_proxy_url(&url), expected);
+            assert_eq!(github_proxy_url(&expected), expected);
+        }
+        for url in [
+            "https://example.com/mod.jar",
+            "https://github.com.evil.invalid/",
+            "https://user@github.com/",
+            "http://github.com/",
+            "https://github.com:8443/",
+        ] {
+            assert_eq!(github_proxy_url(url), url);
+        }
+    }
+}
 
 pub fn find_java_in(base_dir: &Path) -> Result<PathBuf> {
     let managed = base_dir.join(MANAGED_JAVA_DIR).join("bin/java.exe");

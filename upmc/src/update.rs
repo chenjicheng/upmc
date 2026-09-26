@@ -200,13 +200,18 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
     // ─────────────────────────────────────────────
     std::fs::create_dir_all(base_dir.join("updater"))?;
     let game_lock = std::fs::OpenOptions::new()
-        .create(true).truncate(false).read(true).write(true)
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
         .open(base_dir.join("updater/game-update.lock"))?;
     if fs2::FileExt::try_lock_exclusive(&game_lock).is_err() {
         bail!("另一个更新器正在更新此整合包，请等待其完成后重试。");
     }
     let first_install = bootstrap::begin_first_install(base_dir)?;
-    if bootstrap::needs_bootstrap(base_dir) {
+    let pending = base_dir.join("updater/game-update.pending");
+    crate::managed_mods::write_owned(&pending, b"update incomplete")?;
+    if first_install || bootstrap::needs_bootstrap(base_dir) {
         on_progress(Progress::new(15, "正在准备安装组件..."));
         bootstrap::run_bootstrap(base_dir, &remote.downloads, first_install, on_progress)?;
     } else {
@@ -248,14 +253,6 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
         let cache_path = base_dir.join(config::PACK_TOML_CACHE_FILE);
         let _ = std::fs::remove_file(&cache_path);
 
-        // 2d. 保存新的本地版本记录
-        let new_local = version::LocalVersion {
-            mc_version: remote.mc_version.clone(),
-            fabric_version: remote.fabric_version.clone(),
-            version_tag: remote.version_tag.clone(),
-        };
-        version::save_local_version(base_dir, &new_local)?;
-
         on_progress(Progress::new(78, "版本升级完成"));
     } else {
         on_progress(Progress::new(78, "版本已是最新"));
@@ -275,6 +272,8 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
     // ─────────────────────────────────────────────
     if version::is_pack_changed(base_dir, &remote.pack_toml_raw)
         || !base_dir.join(crate::managed_mods::MANIFEST).is_file()
+        || first_install
+        || base_dir.join("updater/mod-transaction.json").exists()
     {
         on_progress(Progress::new(80, "正在同步模组..."));
         packwiz::sync_modpack(base_dir, &remote.pack_url, first_install)?;
@@ -283,6 +282,20 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
     } else {
         on_progress(Progress::new(95, "模组已是最新，跳过同步"));
     }
+
+    if first_install {
+        bootstrap::finish_first_install(base_dir)?;
+    }
+    // Commit the version only after runtime and mod publication both succeed.
+    version::save_local_version(
+        base_dir,
+        &version::LocalVersion {
+            mc_version: remote.mc_version.clone(),
+            fabric_version: remote.fabric_version.clone(),
+            version_tag: remote.version_tag.clone(),
+        },
+    )?;
+    std::fs::remove_file(pending)?;
 
     // 如果之前已配置过代理，自动启动 Xray + 安装 DLL
     // 如果 Xray 启动失败，不安装 DLL（避免 Discord 连不上网）

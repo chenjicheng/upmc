@@ -24,30 +24,41 @@ pub fn needs_bootstrap(base_dir: &Path) -> bool {
 }
 
 pub fn is_bootstrapped(base_dir: &Path) -> bool {
-    base_dir.join(config::PCL2_EXE).exists() && base_dir.join(config::LOCAL_VERSION_FILE).exists()
+    base_dir.join(config::PCL2_EXE).exists()
+        && base_dir.join(config::LOCAL_VERSION_FILE).exists()
+        && !base_dir.join("updater/mod-transaction.json").exists()
+        && !base_dir.join("updater/game-update.pending").exists()
+        && fs::read(base_dir.join("updater/.initial_install_started"))
+            .map(|state| state != b"pending")
+            .unwrap_or(true)
 }
 
 /// Decide before creating any game directories. An existing installation stays
 /// existing even if its updater markers or individual components were deleted.
 pub(crate) fn begin_first_install(base_dir: &Path) -> Result<bool> {
     let marker = base_dir.join("updater/.initial_install_started");
+    if marker.exists() {
+        return Ok(fs::read(&marker)? == b"pending");
+    }
     let existing = [
         config::MINECRAFT_DIR,
         config::PCL2_EXE,
         config::PCL2_SETUP_INI_PATH,
         config::LOCAL_VERSION_FILE,
         "updater/.settings_installed",
-    ].iter().any(|path| base_dir.join(path).symlink_metadata().is_ok());
+    ]
+    .iter()
+    .any(|path| base_dir.join(path).symlink_metadata().is_ok());
     fs::create_dir_all(base_dir.join("updater"))?;
-    match fs::OpenOptions::new().write(true).create_new(true).open(marker) {
-        Ok(mut file) => {
-            file.write_all(b"defaults may only be applied during this first attempt\n")?;
-            file.sync_all()?;
-            Ok(!existing)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(error).context("记录首次安装状态失败"),
-    }
+    crate::managed_mods::write_owned(&marker, if existing { b"complete" } else { b"pending" })?;
+    Ok(!existing)
+}
+
+pub(crate) fn finish_first_install(base_dir: &Path) -> Result<()> {
+    crate::managed_mods::write_owned(
+        &base_dir.join("updater/.initial_install_started"),
+        b"complete",
+    )
 }
 
 pub fn run_bootstrap(
@@ -121,7 +132,11 @@ pub fn run_bootstrap(
     let setup_ini = base_dir.join(config::PCL2_SETUP_INI_PATH);
     if first_install && !setup_ini.exists() {
         on_progress(Progress::new(47, "正在配置启动器..."));
-        crate::managed_mods::create_default(base_dir, Path::new(config::PCL2_SETUP_INI_PATH), config::PCL2_SETUP_INI.as_bytes())?;
+        crate::managed_mods::create_default(
+            base_dir,
+            Path::new(config::PCL2_SETUP_INI_PATH),
+            config::PCL2_SETUP_INI.as_bytes(),
+        )?;
     }
 
     let settings_marker = base_dir.join("updater/.settings_installed");
@@ -317,7 +332,7 @@ fn validate_sha256_hex(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+pub(crate) fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
     let mut file =
         fs::File::open(path).with_context(|| format!("读取文件失败: {}", path.display()))?;
     let mut hasher = Sha256::new();

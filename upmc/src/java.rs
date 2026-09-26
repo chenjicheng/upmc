@@ -10,6 +10,80 @@ use crate::{bootstrap, config, update::Progress, version::Downloads};
 const DEFAULT_JRE_URL: &str = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.6%2B7/OpenJDK21U-jre_x64_windows_hotspot_21.0.6_7.zip";
 const DEFAULT_JRE_SHA256: &str = "707c981a4ff9e680a9ea5d6f625eafe8bc47e1f89140a67d761fde24fc02ab49";
 
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn launcher_environment_uses_pack_java_without_changing_player_settings_or_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = std::path::absolute(root.path().join(config::MANAGED_JAVA_DIR)).unwrap();
+        fs::create_dir_all(runtime.join("bin")).unwrap();
+        fs::write(runtime.join("bin/java.exe"), b"fixture").unwrap();
+        fs::write(root.path().join("Setup.ini"), b"player Java selection").unwrap();
+        let before = [
+            "JAVA_HOME",
+            "PATH",
+            "JAVA_TOOL_OPTIONS",
+            "JDK_JAVA_OPTIONS",
+            "_JAVA_OPTIONS",
+        ]
+        .map(std::env::var_os);
+        let mut command = Command::new("unused-launcher.exe");
+        configure_launcher(&mut command, root.path()).unwrap();
+        let vars: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_os_string()),
+                )
+            })
+            .collect();
+        assert_eq!(vars["JAVA_HOME"].as_deref(), Some(runtime.as_os_str()));
+        assert_eq!(
+            std::env::split_paths(vars["PATH"].as_ref().unwrap())
+                .next()
+                .unwrap(),
+            runtime.join("bin")
+        );
+        for name in ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"] {
+            assert_eq!(vars[name], None);
+        }
+        assert_eq!(
+            config::find_java_in(root.path()).unwrap(),
+            runtime.join("bin/java.exe")
+        );
+        assert_eq!(
+            [
+                "JAVA_HOME",
+                "PATH",
+                "JAVA_TOOL_OPTIONS",
+                "JDK_JAVA_OPTIONS",
+                "_JAVA_OPTIONS"
+            ]
+            .map(std::env::var_os),
+            before
+        );
+        assert_eq!(
+            fs::read(root.path().join("Setup.ini")).unwrap(),
+            b"player Java selection"
+        );
+    }
+
+    #[test]
+    fn custom_java_without_digest_fails_before_download_or_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let downloads: Downloads = serde_json::from_value(serde_json::json!({
+            "jre_url": "https://example.invalid/java.zip"
+        }))
+        .unwrap();
+        let error = ensure_runtime(root.path(), &downloads, &|_| {}).unwrap_err();
+        assert!(format!("{error:#}").contains("SHA256"));
+        assert!(!root.path().join(config::MANAGED_JAVA_DIR).exists());
+    }
+}
+
 fn runtime_works(root: &Path) -> bool {
     if !root.join("bin/javaw.exe").is_file() {
         return false;
@@ -44,7 +118,10 @@ pub(crate) fn ensure_runtime(
     let parent = runtime.parent().context("Java 目录无父目录")?;
     fs::create_dir_all(parent)?;
     let lock = fs::OpenOptions::new()
-        .create(true).truncate(false).read(true).write(true)
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
         .open(parent.join("java-install.lock"))?;
     fs2::FileExt::lock_exclusive(&lock).context("等待 Java 安装锁失败")?;
     if runtime_works(&runtime) {
@@ -53,10 +130,15 @@ pub(crate) fn ensure_runtime(
 
     let url = downloads.jre_url.as_deref().unwrap_or(DEFAULT_JRE_URL);
     let default_url = config::github_proxy_url(DEFAULT_JRE_URL);
-    let sha256 = downloads.jre_sha256.as_deref().filter(|s| !s.is_empty())
+    let sha256 = downloads
+        .jre_sha256
+        .as_deref()
+        .filter(|s| !s.is_empty())
         .or_else(|| (config::github_proxy_url(url) == default_url).then_some(DEFAULT_JRE_SHA256))
         .context("自定义 Java 下载地址缺少 SHA256，请管理员补充 downloads.jre_sha256")?;
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
     let stage = parent.join(format!("java-stage-{}-{nonce}", std::process::id()));
     fs::create_dir(&stage)?;
     let result = (|| -> Result<()> {
@@ -73,7 +155,10 @@ pub(crate) fn ensure_runtime(
                 .find(|path| path.join("bin/java.exe").is_file())
                 .context("Java 压缩包中没有 bin/java.exe")?;
         }
-        ensure!(runtime_works(&extracted), "下载的 Java 21 无法启动，请检查安全软件是否拦截。");
+        ensure!(
+            runtime_works(&extracted),
+            "下载的 Java 21 无法启动，请检查安全软件是否拦截。"
+        );
         let backup = parent.join(format!("java-backup-{}-{nonce}", std::process::id()));
         let had_runtime = runtime.exists();
         if had_runtime {
@@ -101,7 +186,8 @@ pub(crate) fn configure_launcher(command: &mut Command, base_dir: &Path) -> Resu
     if runtime.join("bin/java.exe").is_file() {
         let old_path = std::env::var_os("PATH").unwrap_or_default();
         let paths = std::iter::once(runtime.join("bin")).chain(std::env::split_paths(&old_path));
-        command.env("JAVA_HOME", &runtime)
+        command
+            .env("JAVA_HOME", &runtime)
             .env("PATH", std::env::join_paths(paths)?)
             .env_remove("JAVA_TOOL_OPTIONS")
             .env_remove("JDK_JAVA_OPTIONS")
