@@ -24,12 +24,47 @@ pub fn needs_bootstrap(base_dir: &Path) -> bool {
 }
 
 pub fn is_bootstrapped(base_dir: &Path) -> bool {
-    base_dir.join(config::PCL2_EXE).exists() && base_dir.join(config::LOCAL_VERSION_FILE).exists()
+    base_dir.join(config::PCL2_EXE).exists()
+        && base_dir.join(config::LOCAL_VERSION_FILE).exists()
+        && !base_dir.join("updater/mod-transaction.json").exists()
+        && !base_dir.join("updater/game-update.pending").exists()
+        && fs::read(base_dir.join("updater/.initial_install_started"))
+            .map(|state| state != b"pending")
+            .unwrap_or(true)
+}
+
+/// Decide before creating any game directories. An existing installation stays
+/// existing even if its updater markers or individual components were deleted.
+pub(crate) fn begin_first_install(base_dir: &Path) -> Result<bool> {
+    let marker = base_dir.join("updater/.initial_install_started");
+    if marker.exists() {
+        return Ok(fs::read(&marker)? == b"pending");
+    }
+    let existing = [
+        config::MINECRAFT_DIR,
+        config::PCL2_EXE,
+        config::PCL2_SETUP_INI_PATH,
+        config::LOCAL_VERSION_FILE,
+        "updater/.settings_installed",
+    ]
+    .iter()
+    .any(|path| base_dir.join(path).symlink_metadata().is_ok());
+    fs::create_dir_all(base_dir.join("updater"))?;
+    crate::managed_mods::write_owned(&marker, if existing { b"complete" } else { b"pending" })?;
+    Ok(!existing)
+}
+
+pub(crate) fn finish_first_install(base_dir: &Path) -> Result<()> {
+    crate::managed_mods::write_owned(
+        &base_dir.join("updater/.initial_install_started"),
+        b"complete",
+    )
 }
 
 pub fn run_bootstrap(
     base_dir: &Path,
     downloads: &Downloads,
+    first_install: bool,
     on_progress: &dyn Fn(Progress),
 ) -> Result<()> {
     on_progress(Progress::new(2, "正在创建目录结构..."));
@@ -95,13 +130,17 @@ pub fn run_bootstrap(
     on_progress(Progress::new(46, "Fabric 安装器就绪"));
 
     let setup_ini = base_dir.join(config::PCL2_SETUP_INI_PATH);
-    if !setup_ini.exists() {
+    if first_install && !setup_ini.exists() {
         on_progress(Progress::new(47, "正在配置启动器..."));
-        fs::write(&setup_ini, config::PCL2_SETUP_INI).context("写入 Setup.ini 失败")?;
+        crate::managed_mods::create_default(
+            base_dir,
+            Path::new(config::PCL2_SETUP_INI_PATH),
+            config::PCL2_SETUP_INI.as_bytes(),
+        )?;
     }
 
     let settings_marker = base_dir.join("updater/.settings_installed");
-    if !settings_marker.exists() {
+    if first_install && !settings_marker.exists() {
         if let Some(ref settings_url) = downloads.settings_url {
             let settings_sha256 =
                 require_download_sha(downloads.settings_sha256.as_deref(), "settings_sha256")?;
@@ -127,7 +166,7 @@ pub fn run_bootstrap(
         fs::write(&settings_marker, "installed").context("写入设置安装标记失败")?;
     }
 
-    on_progress(Progress::new(50, "首次安装完成"));
+    on_progress(Progress::new(50, "组件准备完成"));
     Ok(())
 }
 
@@ -143,7 +182,7 @@ pub(crate) fn download_file_verified(
     validate_sha256_hex(expected_sha256)
         .with_context(|| format!("无效的 SHA256 配置: {}", dest.display()))?;
 
-    let url_owned = url.to_string();
+    let url_owned = config::github_proxy_url(url);
     let dest_owned = dest.to_path_buf();
     let expected_sha256_owned = expected_sha256.to_string();
 
@@ -293,7 +332,7 @@ fn validate_sha256_hex(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+pub(crate) fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
     let mut file =
         fs::File::open(path).with_context(|| format!("读取文件失败: {}", path.display()))?;
     let mut hasher = Sha256::new();
@@ -372,18 +411,11 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
 
         let out_path = safe_zip_output_path(dest, &name)?;
 
-        if entry.is_dir() {
-            fs::create_dir_all(&out_path)?;
-        } else {
-            if out_path.exists() {
-                continue;
-            }
-            if let Some(parent) = out_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut outfile = fs::File::create(&out_path)
-                .with_context(|| format!("创建设置文件失败: {}", out_path.display()))?;
-            std::io::copy(&mut entry, &mut outfile)?;
+        if !entry.is_dir() {
+            let relative = out_path.strip_prefix(dest)?;
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+            crate::managed_mods::create_default(dest, relative, &content)?;
         }
     }
 

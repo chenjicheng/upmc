@@ -183,7 +183,7 @@ def ensure_release(artifact, version, tag, build_id):
         actual = make_descriptor(Path(directory) / "updater.exe", version, tag, build_id, DOWNLOAD_URL)
     _require(actual == expected, "Downloaded Release bytes differ from the downloaded CI artifact")
     _verify_remote_tag(tag, build_id)
-    return actual
+    return dict(actual, download_url=PROXY_PREFIX + DOWNLOAD_URL)
 
 
 def _page_files(pages, head):

@@ -85,7 +85,7 @@ pub fn download_or_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Re
         ))?;
 
     // 通过 GitHub 镜像下载
-    let download_url = format!("{}{}", config::GITHUB_PROXY, asset.browser_download_url);
+    let download_url = config::github_proxy_url(&asset.browser_download_url);
     let expected_sha256 = github_asset_sha256(asset.digest.as_deref())?;
     on_progress(Progress::new(
         10,
@@ -327,10 +327,10 @@ fn fetch_latest_release() -> Result<GithubRelease> {
         config::RETRY_BASE_DELAY_SECS,
         "获取 Xray 最新版本",
         || {
-            let url = format!(
+            let url = config::github_proxy_url(&format!(
                 "https://api.github.com/repos/{}/releases/latest",
                 config::XRAY_GITHUB_REPO
-            );
+            ));
 
             let body = agent
                 .get(&url)

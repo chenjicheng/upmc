@@ -21,6 +21,7 @@ mod gui;
 mod gui_state;
 mod gui_switches;
 mod java;
+mod managed_mods;
 #[cfg(test)]
 mod java_test_fixture;
 mod observability;

@@ -451,7 +451,9 @@ fn execute(
         Request::Launch => {
             let launcher = base.join(config::PCL2_EXE);
             anyhow::ensure!(launcher.is_file(), "找不到启动器：{}", launcher.display());
-            std::process::Command::new(launcher)
+            let mut command = std::process::Command::new(launcher);
+            crate::java::configure_launcher(&mut command, base)?;
+            command
                 .current_dir(base)
                 .creation_flags(config::CREATE_NO_WINDOW)
                 .spawn()

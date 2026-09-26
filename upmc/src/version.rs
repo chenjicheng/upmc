@@ -61,7 +61,7 @@ pub struct Downloads {
     #[serde(default)]
     pub jre_url: Option<String>,
 
-    /// Java 运行时 ZIP 的 SHA256。当前版本暂未使用，保留兼容后续启用。
+    /// Java 运行时 ZIP 的 SHA256；内置固定版本可使用内置摘要。
     #[serde(default)]
     pub jre_sha256: Option<String>,
 
@@ -146,8 +146,9 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
         anyhow::bail!("pack_url 必须使用 HTTPS 协议: {}", server_config.pack_url);
     }
 
+    let pack_url = config::github_proxy_url(&server_config.pack_url);
     let pack_toml = agent
-        .get(&server_config.pack_url)
+        .get(&pack_url)
         .call()
         .context("无法获取 pack.toml，请检查网络")?
         .body_mut()
@@ -167,7 +168,7 @@ fn fetch_remote_version_inner() -> Result<RemoteVersion> {
         mc_version,
         fabric_version,
         version_tag,
-        pack_url: server_config.pack_url,
+        pack_url,
         downloads: server_config.downloads,
         pack_toml_raw: pack_toml,
     })

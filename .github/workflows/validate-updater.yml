@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Replace stale PR checks. Keep each main commit's validation available to tags.
+concurrency:
+  group: upmc-validation-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   tests:
     # Ruleset 13169555 requires this exact name from the GitHub Actions app.

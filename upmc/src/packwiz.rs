@@ -2,7 +2,7 @@
 // packwiz.rs — packwiz-installer 调用模块
 // ============================================================
 // 负责调用 packwiz-installer-bootstrap.jar，
-// 让它根据远程 pack.toml 索引增量同步模组和配置文件。
+// 在更新器独立目录中下载，再只同步已记录的模组；保留玩家配置。
 //
 // packwiz-installer-bootstrap 的工作原理：
 //   1. 从指定 URL 下载 pack.toml 和 index.toml
@@ -19,6 +19,12 @@ use std::process::Command;
 use crate::config;
 use crate::retry;
 
+// Pin the actual installer as well as its bootstrap. Java's default updater
+// otherwise contacts GitHub directly and bypasses the configured proxy.
+const INSTALLER_URL: &str =
+    "https://github.com/packwiz/packwiz-installer/releases/download/v0.5.14/packwiz-installer.jar";
+const INSTALLER_SHA256: &str = "c9f646908d340d84773948a9a7d98bc1dae250d35e1016dc6e2b8459760b5598";
+
 /// 调用 packwiz-installer-bootstrap 同步模组和配置。
 ///
 /// 等效于命令：
@@ -34,50 +40,76 @@ use crate::retry;
 ///
 /// 内置重试机制：如果同步失败（通常因网络不稳定），
 /// 会自动重试最多 RETRY_MAX_ATTEMPTS 次。
-pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
+pub fn sync_modpack(base_dir: &Path, pack_url: &str, first_install: bool) -> Result<()> {
     // ── 前置检查（确定性失败，不需要重试） ──
-    let java = config::find_java()?;
+    let java = config::find_java_in(base_dir)?;
     let bootstrap_jar = base_dir.join(config::PACKWIZ_BOOTSTRAP_JAR);
-    let mc_dir = base_dir.join(config::MINECRAFT_DIR);
+    let workspace = crate::managed_mods::prepare_workspace(base_dir)?;
 
     crate::java::validate_installer_jar(&bootstrap_jar, "Packwiz")?;
 
-    std::fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
+    let installer =
+        crate::managed_mods::safe_path(base_dir, Path::new("updater/packwiz-installer.jar"))?;
+    if crate::bootstrap::verify_sha256(&installer, INSTALLER_SHA256).is_err() {
+        crate::bootstrap::download_file_verified(
+            INSTALLER_URL,
+            &installer,
+            INSTALLER_SHA256,
+            &|_| {},
+            80,
+            80,
+        )?;
+    }
 
     // 前置验证 Java 可用（确定性失败，不进入重试循环）
     verify_java(&java)?;
 
     // ── 网络操作（可能因网络波动失败，需要重试） ──
-    let url_owned = pack_url.to_string();
+    let url_owned = config::github_proxy_url(pack_url);
 
     retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
         config::RETRY_BASE_DELAY_SECS,
         "模组同步",
-        || run_packwiz_installer(&java, &bootstrap_jar, &mc_dir, &url_owned),
-    )
+        || run_packwiz_installer(&java, &bootstrap_jar, &workspace, &url_owned),
+    )?;
+    crate::managed_mods::apply(base_dir, first_install)
 }
 
 /// 执行 packwiz-installer 进程（单次尝试）。
 fn run_packwiz_installer(
     java: &Path,
     bootstrap_jar: &Path,
-    mc_dir: &Path,
+    workspace: &Path,
     pack_url: &str,
 ) -> Result<()> {
     // 调用 packwiz-installer-bootstrap
-    // 注意：工作目录设置为 .minecraft，
-    // 因为 packwiz-installer 相对于工作目录来存放文件
+    // Packwiz may replace/remove files from its index. Its entire working
+    // directory is updater-owned, never the player's .minecraft directory.
     let output = Command::new(java)
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("_JAVA_OPTIONS")
         .arg("-jar")
-        // Keep the existing .minecraft CWD and avoid encoding the installation
-        // root into Java's native command-line arguments.
-        .arg(Path::new("..").join(config::PACKWIZ_BOOTSTRAP_JAR))
+        // ASCII relative JAR path preserves the 0.5.7 native path fix.
+        .arg(
+            Path::new("..").join(
+                bootstrap_jar
+                    .file_name()
+                    .context("Packwiz 安装器无文件名")?,
+            ),
+        )
         .arg("-g") // 无头模式（不弹 GUI）
+        .args([
+            "--bootstrap-no-update",
+            "--bootstrap-main-jar",
+            "../packwiz-installer.jar",
+        ])
         .arg("-s")
         .arg("client") // 客户端模式
+        .args(["--pack-folder", ".", "--multimc-folder", "."])
         .arg(pack_url) // 远程 pack.toml URL
-        .current_dir(mc_dir) // 工作目录 = .minecraft
+        .current_dir(workspace)
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()
         .with_context(|| {
@@ -85,7 +117,7 @@ fn run_packwiz_installer(
                 "启动 packwiz-installer 失败\nJava: {}\n安装器: {}\n工作目录: {}",
                 java.display(),
                 bootstrap_jar.display(),
-                mc_dir.display()
+                workspace.display()
             )
         })?;
 
@@ -127,7 +159,7 @@ fn run_packwiz_installer(
             hints,
             java.display(),
             bootstrap_jar.display(),
-            mc_dir.display(),
+            workspace.display(),
         );
     }
 
@@ -140,6 +172,9 @@ fn run_packwiz_installer(
 /// 自动打开下载页面并返回错误（不进入重试循环）。
 fn verify_java(java: &Path) -> Result<()> {
     let output = Command::new(java)
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("_JAVA_OPTIONS")
         .arg("-version")
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()
@@ -227,23 +262,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packwiz_path_non_ansi_root_keeps_game_working_directory() {
+    fn packwiz_path_non_ansi_root_uses_separate_working_directory() {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::java_test_fixture::install_root(dir.path());
         let jar = root.join(config::PACKWIZ_BOOTSTRAP_JAR);
         std::fs::write(&jar, crate::java_test_fixture::jar_bytes()).unwrap();
+        let workspace = crate::managed_mods::prepare_workspace(&root).unwrap();
         run_packwiz_installer(
             &config::find_java().unwrap(),
             &jar,
-            &root.join(config::MINECRAFT_DIR),
+            &workspace,
             "https://example.invalid/pack.toml",
         )
         .unwrap();
         assert_eq!(
-            std::fs::read(root.join(".minecraft/packwiz-path-probe.txt")).unwrap(),
+            std::fs::read(workspace.join("packwiz-path-probe.txt")).unwrap(),
             b"UPMC_JAR_PATH_OK"
         );
         assert!(!root.join("packwiz-path-probe.txt").exists());
+        assert!(!root.join(".minecraft/packwiz-path-probe.txt").exists());
+        let args = std::fs::read_to_string(workspace.join("installer-args.txt")).unwrap();
+        assert!(
+            args.contains("--bootstrap-no-update"),
+            "Java must not download an unproxied installer: {args}"
+        );
+        assert!(args.contains("--bootstrap-main-jar\n../packwiz-installer.jar"));
     }
 
     #[test]

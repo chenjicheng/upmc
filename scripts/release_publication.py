@@ -211,7 +211,7 @@ def ensure_release(artifact, version, tag, build_id):
         actual = make_descriptor(Path(directory) / "updater.exe", version, tag, build_id, DOWNLOAD_URL)
     _require(actual == expected, "Downloaded Release bytes differ from the downloaded CI artifact")
     _verify_remote_tag(tag, build_id)
-    return actual
+    return dict(actual, download_url=PROXY_PREFIX + DOWNLOAD_URL)
 
 
 def _page_files(pages, head):
@@ -337,9 +337,9 @@ def main():
             return 0
         # This is inside the actual CLI, before Release assets or Pages can be
         # mutated. A caller cannot bypass it by skipping a workflow-only step.
-        from release_test_gate import ReleaseGateError, require_green
+        from release_test_gate import ReleaseGateError, wait_for_green
         try:
-            evidence = require_green(args.build_id)
+            evidence = wait_for_green(args.build_id)
         except ReleaseGateError as error:
             raise PublicationError(f"Required validation blocked publication: {error}") from error
         print(json.dumps({"required_validation": evidence}))
