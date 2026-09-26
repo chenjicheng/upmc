@@ -1,4 +1,4 @@
-# Historical transition; ordinary branch validation uses release-slint.yml.
+# Historical transition; ordinary branch validation uses validate-updater.yml.
 # Later native promotion must preserve the two original entry documents.
 name: Build legacy updater
 

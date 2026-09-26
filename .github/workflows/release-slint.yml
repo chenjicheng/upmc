@@ -1,11 +1,11 @@
-# Manifest-selected Slint release. Branch/manual runs never publish.
+# Build release artifacts only for tags or explicit manual requests.
+# PR/main tests run once in validate-updater.yml; manual runs never publish.
 # Later native promotion must preserve the two original entry documents.
 name: Build Slint updater
 
 on:
   push:
     tags: ['v*']
-    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -33,9 +33,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Test publication behavior without remote mutations
-        run: python -m unittest discover -s scripts/tests -v
-
       - name: Resolve publication boundary
         id: context
         shell: pwsh
@@ -61,15 +58,6 @@ jobs:
 
       - name: Build the matching embedded proxy DLL pair
         run: cargo build --locked --release -p discord-proxy-dll -p force-proxy-dll
-
-      - name: Install Java for real installer path tests
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Test the legacy workspace
-        run: cargo test --locked --workspace
 
       - name: Build the updater with both source DLLs embedded
         env:
@@ -106,7 +94,8 @@ jobs:
       needs.build.outputs.publish == 'true' && github.event_name == 'push' &&
       github.ref == format('refs/tags/{0}', needs.build.outputs.release_tag) && github.repository == 'chenjicheng/upmc'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Publication can wait up to 15 minutes for this exact commit's main tests.
+    timeout-minutes: 25
     permissions:
       actions: read
       contents: write

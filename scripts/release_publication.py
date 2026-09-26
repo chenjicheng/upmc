@@ -337,9 +337,9 @@ def main():
             return 0
         # This is inside the actual CLI, before Release assets or Pages can be
         # mutated. A caller cannot bypass it by skipping a workflow-only step.
-        from release_test_gate import ReleaseGateError, require_green
+        from release_test_gate import ReleaseGateError, wait_for_green
         try:
-            evidence = require_green(args.build_id)
+            evidence = wait_for_green(args.build_id)
         except ReleaseGateError as error:
             raise PublicationError(f"Required validation blocked publication: {error}") from error
         print(json.dumps({"required_validation": evidence}))

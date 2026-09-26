@@ -204,7 +204,7 @@ class ReleaseTests(Fixtures):
         current = (root / '.github/workflows/release-slint.yml').read_text(encoding='utf-8')
         self.assertNotIn('branches: [main, dev]', historical)
         self.assertIn("tags: ['v0.4.8']", historical)
-        self.assertIn('branches: [main, dev]', current)
+        self.assertNotIn('branches:', current)
     def new_descriptor(self):
         return dict(self.descriptor(), version=self.fixture_current, download_url=self.current_url)
 

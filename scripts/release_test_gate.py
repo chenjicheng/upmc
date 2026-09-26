@@ -4,21 +4,24 @@ import json
 import re
 import subprocess
 import sys
+import time
 from urllib.parse import urlencode
 
 REPOSITORY = "chenjicheng/upmc"
-# Resolve workflow IDs from their exact registered paths; generic check-run names
-# cannot distinguish a successful tag build from a failed main build.
+# The tag workflow builds the actual release artifact. Only the independent
+# PR/main validation is required here; CodeQL remains an advisory scan.
+# Resolve the exact workflow, event, commit and attempt, not a generic green badge.
 POLICIES = (
     (".github/workflows/validate-updater.yml", "push", ("UPMC tests",), ()),
-    (".github/workflows/release-slint.yml", "push", ("build",), ("publish",)),
-    ("dynamic/github-code-scanning/codeql", "dynamic",
-     ("Analyze (actions)", "Analyze (rust)", "Analyze (python)"), ()),
 )
 
 
 class ReleaseGateError(RuntimeError):
     pass
+
+
+class ReleaseGatePending(ReleaseGateError):
+    """The canonical validation may still finish; it has not authorized release."""
 
 
 def _require(condition, message):
@@ -30,13 +33,13 @@ def _positive(value):
     return type(value) is int and value > 0
 
 
-def _api(endpoint):
+def _api(endpoint, *, timeout=45):
     result = subprocess.run(
         ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint,
          "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28"],
         # Decode in the calling thread. Windows subprocess text-mode readers can
         # otherwise fail in a background thread under the system ANSI code page.
-        capture_output=True, timeout=45,
+        capture_output=True, timeout=timeout,
     )
     try:
         stdout = result.stdout.decode("utf-8", errors="strict")
@@ -87,7 +90,8 @@ def _validate_run(run, workflow, path, event, sha):
 def _latest(api, workflow, path, event, sha):
     query = urlencode({"event": event, "branch": "main", "head_sha": sha})
     runs = _collection(api, f"repos/{REPOSITORY}/actions/workflows/{workflow}/runs?{query}", "workflow_runs")
-    _require(runs, f"No canonical {event}/main validation exists for {path} at {sha}")
+    if not runs:
+        raise ReleaseGatePending(f"No canonical {event}/main validation exists for {path} at {sha}")
     for run in runs:
         _validate_run(run, workflow, path, event, sha)
     # GitHub increments run_number for new runs of this workflow; run IDs are
@@ -97,6 +101,8 @@ def _latest(api, workflow, path, event, sha):
 
 
 def _successful(run, path):
+    if run.get("status") in {"queued", "in_progress", "waiting", "requested", "pending"} and run.get("conclusion") is None:
+        raise ReleaseGatePending(f"Waiting for {path} run {run.get('id')} attempt {run.get('run_attempt')}")
     _require(run.get("status") == "completed" and run.get("conclusion") == "success",
              f"Required validation is not green: {path} run {run.get('id')} "
              f"attempt {run.get('run_attempt')} ({run.get('status')}/{run.get('conclusion')})")
@@ -149,12 +155,54 @@ def require_green(sha, api=None):
         raise ReleaseGateError(f"Cannot establish required validation: {error}") from error
 
 
+def wait_for_green(sha, *, api=None, timeout_seconds=900, poll_seconds=15):
+    """Let tag builds overlap main tests, with a bounded wait before any write.
+
+    Only absent or still-running canonical runs are retried. Terminal failures,
+    stale jobs and API errors fail immediately. Each poll revalidates the newest
+    run and attempt instead of retaining earlier successful evidence. API calls
+    share the deadline, including their subprocess timeout.
+    """
+    _require(type(timeout_seconds) is int and 0 <= timeout_seconds <= 1800,
+             "Validation wait must be between 0 and 1800 seconds")
+    _require(type(poll_seconds) is int and poll_seconds > 0, "Poll interval must be positive")
+    if timeout_seconds == 0:
+        return require_green(sha, api)
+    deadline = time.monotonic() + timeout_seconds
+    last_message = None
+
+    def remaining_budget():
+        remaining = deadline - time.monotonic()
+        _require(remaining > 0, "Timed out waiting for required validation")
+        return remaining
+
+    def bounded_api(endpoint):
+        remaining = remaining_budget()
+        result = api(endpoint) if api is not None else _api(endpoint, timeout=min(45, remaining))
+        remaining_budget()
+        return result
+
+    while True:
+        try:
+            evidence = require_green(sha, bounded_api)
+            remaining_budget()
+            return evidence
+        except ReleaseGatePending as error:
+            remaining = remaining_budget()
+            if str(error) != last_message:
+                print(str(error), file=sys.stderr, flush=True)
+                last_message = str(error)
+            time.sleep(min(poll_seconds, remaining))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sha", required=True)
+    parser.add_argument("--wait-seconds", type=int, default=0,
+                        help="Wait only for pending canonical tests (default: do not wait)")
     args = parser.parse_args()
     try:
-        print(json.dumps(require_green(args.sha), indent=2))
+        print(json.dumps(wait_for_green(args.sha, timeout_seconds=args.wait_seconds), indent=2))
         return 0
     except ReleaseGateError as error:
         print(f"Release blocked: {error}", file=sys.stderr)
