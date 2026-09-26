@@ -205,6 +205,8 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
         on_progress(Progress::new(50, "组件检查完毕"));
     }
 
+    crate::java::ensure_runtime(base_dir, &remote.downloads, on_progress)?;
+
     // ─────────────────────────────────────────────
     // 阶段 1: 检查版本
     // ─────────────────────────────────────────────

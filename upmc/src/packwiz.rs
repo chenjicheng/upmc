@@ -36,7 +36,7 @@ use crate::retry;
 /// 会自动重试最多 RETRY_MAX_ATTEMPTS 次。
 pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
     // ── 前置检查（确定性失败，不需要重试） ──
-    let java = config::find_java()?;
+    let java = config::find_java_in(base_dir)?;
     let bootstrap_jar = base_dir.join(config::PACKWIZ_BOOTSTRAP_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 
@@ -48,7 +48,7 @@ pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
     verify_java(&java)?;
 
     // ── 网络操作（可能因网络波动失败，需要重试） ──
-    let url_owned = pack_url.to_string();
+    let url_owned = config::github_proxy_url(pack_url);
 
     retry::with_retry(
         config::RETRY_MAX_ATTEMPTS,
@@ -69,6 +69,9 @@ fn run_packwiz_installer(
     // 注意：工作目录设置为 .minecraft，
     // 因为 packwiz-installer 相对于工作目录来存放文件
     let output = Command::new(java)
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("_JAVA_OPTIONS")
         .arg("-jar")
         // Keep the existing .minecraft CWD and avoid encoding the installation
         // root into Java's native command-line arguments.
@@ -140,6 +143,9 @@ fn run_packwiz_installer(
 /// 自动打开下载页面并返回错误（不进入重试循环）。
 fn verify_java(java: &Path) -> Result<()> {
     let output = Command::new(java)
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("_JAVA_OPTIONS")
         .arg("-version")
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()

@@ -92,7 +92,7 @@ mod path_tests {
 ///
 /// `-noprofile` 表示不写入启动器 profile（由 PCL2 自己管理）。
 pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -> Result<()> {
-    let java = config::find_java()?;
+    let java = config::find_java_in(base_dir)?;
     let installer_jar = base_dir.join(config::FABRIC_INSTALLER_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 
@@ -118,6 +118,9 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
     // 调用 Fabric Installer（使用 -noprofile，PCL2 不需要）
     // 使用 BMCLAPI 镜像加速国内下载
     let output = Command::new(&java)
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("_JAVA_OPTIONS")
         .arg("-jar")
         // Java's native launcher can lose characters outside the Windows ANSI
         // codepage. CreateProcessW preserves the Unicode working directory.
@@ -198,6 +201,9 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
 /// 运行 `java -version`，如果失败则自动打开下载页面并返回错误。
 fn verify_java(java: &Path) -> Result<()> {
     let output = Command::new(java)
+        .env_remove("JAVA_TOOL_OPTIONS")
+        .env_remove("JDK_JAVA_OPTIONS")
+        .env_remove("_JAVA_OPTIONS")
         .arg("-version")
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()

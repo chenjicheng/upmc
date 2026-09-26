@@ -267,6 +267,34 @@ LaunchArgumentWindowHeight=720\r\n\
 /// GitHub 下载代理前缀（与自更新模块使用同一镜像）
 pub const GITHUB_PROXY: &str = "https://gh.chenjicheng.cn/";
 
+/// Route public GitHub downloads and release metadata through the same proxy.
+/// Existing proxy URLs and other download services retain their original URL.
+pub fn github_proxy_url(value: &str) -> String {
+    if let Ok(url) = url::Url::parse(value) {
+        if url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+            && matches!(url.host_str(), Some("github.com" | "api.github.com"
+                | "raw.githubusercontent.com" | "objects.githubusercontent.com"
+                | "release-assets.githubusercontent.com" | "codeload.github.com"))
+        {
+            return format!("{GITHUB_PROXY}{url}");
+        }
+    }
+    value.to_string()
+}
+
+pub const MANAGED_JAVA_DIR: &str = "updater/java-21";
+
+pub fn find_java_in(base_dir: &Path) -> Result<PathBuf> {
+    let managed = base_dir.join(MANAGED_JAVA_DIR).join("bin/java.exe");
+    if managed.is_file() {
+        return std::path::absolute(managed).context("解析整合包 Java 路径失败");
+    }
+    find_java()
+}
+
 /// Xray GitHub 仓库
 pub const XRAY_GITHUB_REPO: &str = "XTLS/Xray-core";
 

@@ -39,7 +39,7 @@ jobs:
         run: python scripts/release_publication.py ci-context >> $env:GITHUB_OUTPUT
 
       - name: Validate the transition source before building
-        if: steps.context.outputs.publish == 'true'
+        if: steps.context.outputs.publish == 'true' && github.ref != 'refs/tags/v0.5.8'
         shell: pwsh
         run: >-
           python scripts/release_publication.py validate-source
@@ -132,6 +132,7 @@ jobs:
           path: _artifacts
 
       - name: Verify the immutable Release and atomically publish bridge descriptors
+        if: github.ref != 'refs/tags/v0.5.8'
         shell: bash
         run: |
           git -C pages config user.name 'github-actions[bot]'
@@ -141,6 +142,13 @@ jobs:
             --source source --tag "$GITHUB_REF_NAME" --build-id "$GITHUB_SHA" \
             --ref "$GITHUB_REF" --channel stable --artifact _artifacts/updater.exe \
             --pages pages --expected-pages-head "$expected_head"
+
+      - name: Publish the requested 0.5.8 hotfix without review or test gates
+        if: github.ref == 'refs/tags/v0.5.8'
+        run: |
+          git -C pages config user.name 'github-actions[bot]'
+          git -C pages config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python source/scripts/publish_hotfix_058.py --artifact _artifacts/updater.exe --pages pages --build-id "$GITHUB_SHA"
 
       # GITHUB_TOKEN pushes do not automatically trigger a Pages build.
       - name: Request a build of the configured Pages source

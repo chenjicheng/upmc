@@ -1696,7 +1696,7 @@ impl TryFrom<RawUpdaterVersionInfo> for UpdaterVersionInfo {
                 .context("updater version must be SemVer")?,
             build_id: raw.build_id.to_ascii_lowercase(),
             sha256: raw.sha256.to_ascii_lowercase(),
-            download_url: raw.download_url,
+            download_url: config::github_proxy_url(&raw.download_url),
             size: raw.size,
         })
     }
@@ -1704,7 +1704,7 @@ impl TryFrom<RawUpdaterVersionInfo> for UpdaterVersionInfo {
 
 fn validate_release_url(value: &str) -> Result<()> {
     let official = value
-        .strip_prefix("https://gh.chenjicheng.cn/")
+        .strip_prefix(config::GITHUB_PROXY)
         .unwrap_or(value);
     let url = url::Url::parse(official).context("invalid updater Release URL")?;
     anyhow::ensure!(

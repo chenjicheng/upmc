@@ -143,7 +143,7 @@ pub(crate) fn download_file_verified(
     validate_sha256_hex(expected_sha256)
         .with_context(|| format!("无效的 SHA256 配置: {}", dest.display()))?;
 
-    let url_owned = url.to_string();
+    let url_owned = config::github_proxy_url(url);
     let dest_owned = dest.to_path_buf();
     let expected_sha256_owned = expected_sha256.to_string();
 
