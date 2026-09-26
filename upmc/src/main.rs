@@ -20,6 +20,9 @@ mod fabric;
 mod gui;
 mod gui_state;
 mod gui_switches;
+mod java;
+#[cfg(test)]
+mod java_test_fixture;
 mod observability;
 mod packwiz;
 mod retry;

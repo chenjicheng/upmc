@@ -40,12 +40,7 @@ pub fn sync_modpack(base_dir: &Path, pack_url: &str) -> Result<()> {
     let bootstrap_jar = base_dir.join(config::PACKWIZ_BOOTSTRAP_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 
-    if !bootstrap_jar.exists() {
-        bail!(
-            "找不到 packwiz-installer-bootstrap: {}",
-            bootstrap_jar.display()
-        );
-    }
+    crate::java::validate_installer_jar(&bootstrap_jar, "Packwiz")?;
 
     std::fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
 
@@ -75,7 +70,9 @@ fn run_packwiz_installer(
     // 因为 packwiz-installer 相对于工作目录来存放文件
     let output = Command::new(java)
         .arg("-jar")
-        .arg(bootstrap_jar)
+        // Keep the existing .minecraft CWD and avoid encoding the installation
+        // root into Java's native command-line arguments.
+        .arg(Path::new("..").join(config::PACKWIZ_BOOTSTRAP_JAR))
         .arg("-g") // 无头模式（不弹 GUI）
         .arg("-s")
         .arg("client") // 客户端模式
@@ -83,7 +80,14 @@ fn run_packwiz_installer(
         .current_dir(mc_dir) // 工作目录 = .minecraft
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()
-        .context("启动 packwiz-installer 失败，请检查 Java 运行时是否正常")?;
+        .with_context(|| {
+            format!(
+                "启动 packwiz-installer 失败\nJava: {}\n安装器: {}\n工作目录: {}",
+                java.display(),
+                bootstrap_jar.display(),
+                mc_dir.display()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -115,11 +119,15 @@ fn run_packwiz_installer(
              \n\
              ── 错误输出 ──\n{}\n\
              {}\n\
-             建议: 请检查网络连接后重试，如果问题持续请截图联系管理员。",
+             Java: {}\n安装器: {}\n工作目录: {}\n\
+             问题持续时请提供完整错误信息。",
             exit_code_str,
             stdout_display,
             stderr_display,
             hints,
+            java.display(),
+            bootstrap_jar.display(),
+            mc_dir.display(),
         );
     }
 
@@ -168,6 +176,9 @@ fn verify_java(java: &Path) -> Result<()> {
 /// 分析 packwiz-installer 的输出，推断可能的失败原因。
 fn diagnose_sync_failure(stdout: &str, stderr: &str) -> String {
     let combined = format!("{}\n{}", stdout.to_lowercase(), stderr.to_lowercase());
+    if let Some(hint) = crate::java::local_failure_hint(&combined) {
+        return format!("\n{hint}\n");
+    }
     let mut hints = Vec::new();
 
     if combined.contains("connection")
@@ -214,6 +225,39 @@ fn diagnose_sync_failure(stdout: &str, stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packwiz_path_non_ansi_root_keeps_game_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::java_test_fixture::install_root(dir.path());
+        let jar = root.join(config::PACKWIZ_BOOTSTRAP_JAR);
+        std::fs::write(&jar, crate::java_test_fixture::jar_bytes()).unwrap();
+        run_packwiz_installer(
+            &config::find_java().unwrap(),
+            &jar,
+            &root.join(config::MINECRAFT_DIR),
+            "https://example.invalid/pack.toml",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(root.join(".minecraft/packwiz-path-probe.txt")).unwrap(),
+            b"UPMC_JAR_PATH_OK"
+        );
+        assert!(!root.join("packwiz-path-probe.txt").exists());
+    }
+
+    #[test]
+    fn packwiz_path_access_error_diagnoses_local_file() {
+        let hint = diagnose_sync_failure(
+            "",
+            "Error: Unable to access jarfile ../updater/packwiz-installer-bootstrap.jar",
+        );
+        assert!(
+            hint.contains("文件"),
+            "missing actionable local-file diagnosis: {hint}"
+        );
+        assert!(!hint.contains("网络"));
+    }
 
     #[test]
     fn diagnose_network_error() {

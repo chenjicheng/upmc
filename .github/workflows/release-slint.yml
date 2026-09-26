@@ -62,6 +62,12 @@ jobs:
       - name: Build the matching embedded proxy DLL pair
         run: cargo build --locked --release -p discord-proxy-dll -p force-proxy-dll
 
+      - name: Install Java for real installer path tests
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Test the legacy workspace
         run: cargo test --locked --workspace
 

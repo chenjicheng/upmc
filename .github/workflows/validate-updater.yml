@@ -39,5 +39,11 @@ jobs:
           shared-key: slint-050-windows-2022-rust-1.95.0
       - name: Build the matching embedded proxy DLL pair
         run: cargo build --locked --release -p discord-proxy-dll -p force-proxy-dll
+      - name: Install Java for real installer path tests
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - name: Test the complete workspace
+        # Actual Java execution is part of the non-ANSI path regression tests.
         run: cargo test --locked --workspace
