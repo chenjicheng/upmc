@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::windows::fs::MetadataExt;
@@ -308,6 +308,40 @@ mod tests {
         assert_eq!(
             fs::read(root.path().join(".minecraft/mods/ä.jar")).unwrap(),
             b"same"
+        );
+    }
+
+    #[test]
+    fn unicode_expansion_is_not_a_windows_filename_alias() {
+        let root = fixture();
+        let base = root.path();
+        write(base, ".minecraft/mods/ß.jar", b"old");
+        tracked(base, &[("a", "mods/ß.jar", b"old")]);
+        downloaded(base, &[("a", "mods/ss.jar", b"new")]);
+        apply(base, false).unwrap();
+        assert_eq!(
+            fs::read(base.join(".minecraft/mods/ss.jar")).unwrap(),
+            b"new"
+        );
+        assert!(!base.join(".minecraft/mods/ß.jar").exists());
+    }
+
+    #[test]
+    fn unicode_expansion_does_not_grant_ownership_of_a_player_mod() {
+        let root = fixture();
+        let base = root.path();
+        write(base, ".minecraft/mods/ß.jar", b"old");
+        write(base, ".minecraft/mods/ss.jar", b"old");
+        tracked(base, &[("a", "mods/ß.jar", b"old")]);
+        downloaded(base, &[("a", "mods/ss.jar", b"new")]);
+        assert!(apply(base, false).is_err());
+        assert_eq!(
+            fs::read(base.join(".minecraft/mods/ss.jar")).unwrap(),
+            b"old"
+        );
+        assert_eq!(
+            fs::read(base.join(".minecraft/mods/ß.jar")).unwrap(),
+            b"old"
         );
     }
 
@@ -703,15 +737,36 @@ struct Transaction {
     directory: String,
 }
 
-// Unicode case folding is conservative: aliases conflict instead of being
-// installed twice or retired through a second spelling on Windows.
-fn path_key(path: &str) -> String {
-    path.to_uppercase()
+// Use Windows ordinal comparison. Unicode uppercase expansion would incorrectly
+// grant ownership of ss.jar through an unrelated managed ß.jar.
+fn same_path(left: &str, right: &str) -> Result<bool> {
+    let left: Vec<u16> = left.encode_utf16().collect();
+    let right: Vec<u16> = right.encode_utf16().collect();
+    let result = unsafe {
+        winapi::um::stringapiset::CompareStringOrdinal(
+            left.as_ptr(),
+            left.len().try_into()?,
+            right.as_ptr(),
+            right.len().try_into()?,
+            1,
+        )
+    };
+    ensure!(result != 0, "Windows 文件名比较失败");
+    Ok(result == 2)
+}
+
+fn contains_path(paths: &[String], path: &str) -> Result<bool> {
+    for other in paths {
+        if same_path(other, path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn owns(manifest: &Manifest, path: &str, target: &Path) -> Result<bool> {
     for entry in manifest.files.values() {
-        if path_key(&entry.path) == path_key(path) && matches_hash(target, &entry.hash)? {
+        if same_path(&entry.path, path)? && matches_hash(target, &entry.hash)? {
             return Ok(true);
         }
     }
@@ -723,14 +778,15 @@ fn check_plan(
     old: &Manifest,
     next: &Manifest,
     recovering: bool,
-) -> Result<BTreeSet<String>> {
-    let mut destinations = BTreeSet::new();
+) -> Result<Vec<String>> {
+    let mut destinations = Vec::new();
     for entry in next.files.values() {
         let path = mod_path(&entry.path)?;
         ensure!(
-            destinations.insert(path_key(&path)),
+            !contains_path(&destinations, &path)?,
             "多个模组使用同一文件名：{path}"
         );
+        destinations.push(path.clone());
         let target = safe_path(game, Path::new(&path))?;
         if target.exists() {
             ensure!(
@@ -742,7 +798,7 @@ fn check_plan(
     for prior in old.files.values() {
         let path = mod_path(&prior.path)?;
         let target = safe_path(game, Path::new(&path))?;
-        if !destinations.contains(&path_key(&path)) && target.exists() {
+        if !contains_path(&destinations, &path)? && target.exists() {
             ensure!(
                 owns(old, &path, &target)?,
                 "玩家修改过旧模组，已保留：{path}"
@@ -797,7 +853,7 @@ fn finish_transaction(base_dir: &Path, transaction: &Transaction) -> Result<()> 
         move_new(&staged, &target).context("发布模组失败，已保留更新事务及原文件，请重试")?;
     }
     for prior in transaction.old.files.values() {
-        if destinations.contains(&path_key(&prior.path)) {
+        if contains_path(&destinations, &prior.path)? {
             continue;
         }
         let target = safe_path(&game, Path::new(&prior.path))?;
