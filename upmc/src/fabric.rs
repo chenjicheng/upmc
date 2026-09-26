@@ -17,6 +17,68 @@ use std::process::Command;
 use crate::config;
 use crate::retry;
 
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn fabric_path_non_ansi_root_installs_into_existing_game_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::java_test_fixture::install_root(dir.path());
+        fs::write(
+            root.join(config::FABRIC_INSTALLER_JAR),
+            crate::java_test_fixture::jar_bytes(),
+        )
+        .unwrap();
+        install_fabric(&root, "1.21.11", "0.19.5").unwrap();
+        assert_eq!(
+            fs::read(root.join(".minecraft/fabric-path-probe.txt")).unwrap(),
+            b"UPMC_JAR_PATH_OK"
+        );
+        assert!(!root.join("fabric-path-probe.txt").exists());
+    }
+
+    #[test]
+    fn fabric_path_locked_jar_is_diagnosed_before_writing_game_directory() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::java_test_fixture::install_root(dir.path());
+        let jar = root.join(config::FABRIC_INSTALLER_JAR);
+        fs::write(&jar, b"PKfixture").unwrap();
+        let _locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&jar)
+            .unwrap();
+        let error = install_fabric(&root, "1.21.11", "0.19.5").unwrap_err();
+        assert!(
+            !root.join(".minecraft/launcher_profiles.json").exists(),
+            "local JAR failure must precede game/network work: {error:#}"
+        );
+        assert!(format!("{error:#}").contains("安装器"));
+    }
+
+    #[test]
+    fn fabric_path_invalid_jar_is_rejected_before_writing_profiles() {
+        for contents in [None, Some(&b""[..]), Some(&b"PKnot a complete archive"[..])] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = crate::java_test_fixture::install_root(dir.path());
+            let jar = root.join(config::FABRIC_INSTALLER_JAR);
+            if let Some(bytes) = contents {
+                fs::write(&jar, bytes).unwrap();
+            } else {
+                fs::create_dir(&jar).unwrap();
+            }
+            let error = install_fabric(&root, "1.21.11", "0.19.5").unwrap_err();
+            assert!(
+                !root.join(".minecraft/launcher_profiles.json").exists(),
+                "invalid JAR must precede game writes: {error:#}"
+            );
+            assert!(format!("{error:#}").contains("安装器"));
+        }
+    }
+}
+
 /// 调用 Fabric Installer CLI 安装指定版本的 MC + Fabric Loader。
 ///
 /// 等效于命令：
@@ -34,10 +96,7 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
     let installer_jar = base_dir.join(config::FABRIC_INSTALLER_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 
-    // 检查必要文件是否存在
-    if !installer_jar.exists() {
-        bail!("找不到 Fabric 安装器: {}", installer_jar.display());
-    }
+    crate::java::validate_installer_jar(&installer_jar, "Fabric")?;
 
     // 确保 .minecraft 目录存在
     fs::create_dir_all(&mc_dir).context("创建 .minecraft 目录失败")?;
@@ -60,10 +119,12 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
     // 使用 BMCLAPI 镜像加速国内下载
     let output = Command::new(&java)
         .arg("-jar")
-        .arg(&installer_jar)
+        // Java's native launcher can lose characters outside the Windows ANSI
+        // codepage. CreateProcessW preserves the Unicode working directory.
+        .arg(config::FABRIC_INSTALLER_JAR)
         .arg("client")
         .arg("-dir")
-        .arg(&mc_dir)
+        .arg(config::MINECRAFT_DIR)
         .arg("-mcversion")
         .arg(mc_version)
         .arg("-loader")
@@ -73,13 +134,24 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
         .arg(config::FABRIC_META_URL)
         .arg("-mavenurl")
         .arg(config::FABRIC_MAVEN_URL)
+        .current_dir(base_dir)
         .creation_flags(config::CREATE_NO_WINDOW)
         .output()
-        .context("启动 Fabric 安装器失败")?;
+        .with_context(|| {
+            format!(
+                "启动 Fabric 安装器失败\nJava: {}\n安装器: {}\n工作目录: {}",
+                java.display(),
+                installer_jar.display(),
+                base_dir.display()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let advice = crate::java::local_failure_hint(&format!("{stdout}\n{stderr}")).unwrap_or(
+            "请根据以上输出检查 Java 运行环境和下载连接；问题持续时请提供完整错误信息。",
+        );
 
         let exit_code_str = match output.status.code() {
             Some(code) => format!("{}", code),
@@ -105,12 +177,16 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
              ── 错误输出 ──\n{}\n\
              \n\
              目标版本: MC {} + Fabric Loader {}\n\
-             建议: 请检查网络连接后重试，如果问题持续请截图联系管理员。",
+             Java: {}\n安装器: {}\n工作目录: {}\n建议: {}",
             exit_code_str,
             stdout_display,
             stderr_display,
             mc_version,
             fabric_version,
+            java.display(),
+            installer_jar.display(),
+            base_dir.display(),
+            advice,
         );
     }
 

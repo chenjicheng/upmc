@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+#[cfg(not(test))]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -378,36 +379,90 @@ pub fn save_user_settings(base_dir: &Path, settings: &UserSettings) -> Result<()
 /// 如果找不到 Java，会自动打开 Java 下载页面并返回错误。
 pub fn find_java() -> Result<PathBuf> {
     // 1. JAVA_HOME
-    if let Ok(java_home) = std::env::var("JAVA_HOME") {
+    if let Some(java_home) = std::env::var_os("JAVA_HOME") {
         let p = PathBuf::from(&java_home).join("bin/java.exe");
-        if p.exists() {
-            return Ok(p);
+        if p.is_file() {
+            return std::path::absolute(p).context("解析 JAVA_HOME 中的 Java 路径失败");
         }
     }
 
-    // 2. PATH（使用 where 命令查找）
-    if let Ok(output) = Command::new("where")
-        .arg("java")
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        && output.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(first_line) = stdout.lines().next() {
-            let p = PathBuf::from(first_line.trim());
-            if p.exists() {
-                return Ok(p);
-            }
+    // Keep where.exe's current-directory/PATH order, but never decode console
+    // bytes as UTF-8. Resolve before a Java child changes its working directory.
+    let current = std::env::current_dir().context("读取当前目录以查找 Java 失败")?;
+    let search_path = std::env::var_os("PATH").unwrap_or_default();
+    for directory in std::iter::once(current).chain(std::env::split_paths(&search_path)) {
+        let p = directory.join("java.exe");
+        if p.is_file() {
+            return std::path::absolute(p).context("解析 PATH 中的 Java 路径失败");
         }
     }
 
     // 自动打开 Java 下载页面
+    #[cfg(not(test))]
     let _ = Command::new("cmd")
         .args(["/c", "start", "", JAVA_DOWNLOAD_URL])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 
     Err(anyhow::Error::new(JavaNotFound))
+}
+
+#[cfg(test)]
+mod java_lookup_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "subprocess fixture, invoked by parent tests"]
+    fn java_lookup_child() {
+        let output = std::env::var_os("UPMC_JAVA_LOOKUP_OUTPUT").unwrap();
+        let result = find_java()
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| format!("{e:#}"));
+        fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
+    fn lookup_from_child(relative_home: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("Java 中文 العربية 空格").join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let expected = bin.join("java.exe");
+        fs::write(&expected, b"lookup only, never executed").unwrap();
+        let output_file = dir.path().join("result.json");
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "config::java_lookup_tests::java_lookup_child",
+                "--ignored",
+            ])
+            .current_dir(dir.path())
+            .env("UPMC_JAVA_LOOKUP_OUTPUT", &output_file);
+        if relative_home {
+            child.env("JAVA_HOME", "Java 中文 العربية 空格");
+        } else {
+            child.env_remove("JAVA_HOME");
+            let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+            child.env(
+                "PATH",
+                std::env::join_paths([bin.as_path(), system.as_path()]).unwrap(),
+            );
+        }
+        let output = crate::java_test_fixture::run(&mut child);
+        assert!(output.status.success(), "lookup child failed: {:?}", output);
+        let selected: std::result::Result<String, String> =
+            serde_json::from_slice(&fs::read(&output_file).unwrap()).unwrap();
+        assert_eq!(PathBuf::from(selected.unwrap()), expected);
+    }
+
+    #[test]
+    fn java_lookup_relative_home_survives_child_working_directory_change() {
+        lookup_from_child(true);
+    }
+
+    #[test]
+    fn java_lookup_unicode_path_does_not_decode_where_output_as_utf8() {
+        lookup_from_child(false);
+    }
 }
 
 #[cfg(test)]
