@@ -5,7 +5,7 @@
 //   阶段 0: 首次安装自举（下载 JRE、PCL2、工具 jar）
 //   阶段 1: 检查版本差异
 //   阶段 2: 安装新版本 MC + Fabric（如果需要）
-//   阶段 3: 同步模组和配置
+//   阶段 3: 仅同步受管理模组，保留玩家配置
 //
 // 通过回调函数 (callback) 向 GUI 报告进度。
 // ============================================================
@@ -196,11 +196,19 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
     };
 
     // ─────────────────────────────────────────────
-    // 阶段 0: 首次安装自举（如果需要）
+    // 阶段 0: 区分全新安装与组件修复，先记录再创建游戏目录。
     // ─────────────────────────────────────────────
+    std::fs::create_dir_all(base_dir.join("updater"))?;
+    let game_lock = std::fs::OpenOptions::new()
+        .create(true).truncate(false).read(true).write(true)
+        .open(base_dir.join("updater/game-update.lock"))?;
+    if fs2::FileExt::try_lock_exclusive(&game_lock).is_err() {
+        bail!("另一个更新器正在更新此整合包，请等待其完成后重试。");
+    }
+    let first_install = bootstrap::begin_first_install(base_dir)?;
     if bootstrap::needs_bootstrap(base_dir) {
-        on_progress(Progress::new(15, "首次运行，正在下载组件..."));
-        bootstrap::run_bootstrap(base_dir, &remote.downloads, on_progress)?;
+        on_progress(Progress::new(15, "正在准备安装组件..."));
+        bootstrap::run_bootstrap(base_dir, &remote.downloads, first_install, on_progress)?;
     } else {
         on_progress(Progress::new(50, "组件检查完毕"));
     }
@@ -233,13 +241,8 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
         on_progress(Progress::new(60, "正在安装 Fabric..."));
         fabric::install_fabric(base_dir, &remote.mc_version, &remote.fabric_version)?;
 
-        // 2b. 清理旧版本目录
-        on_progress(Progress::new(70, "正在清理旧版本..."));
-        fabric::cleanup_old_versions(base_dir, &remote.version_tag)?;
-
-        // 2c. 清空旧模组（新版本模组由 packwiz 重新下载）
-        on_progress(Progress::new(75, "正在清理旧模组..."));
-        fabric::clean_mods_dir(base_dir)?;
+        // Older version directories may contain isolated saves and settings.
+        // Mod removal is limited to unchanged files in our managed manifest.
 
         // 2c-2. 清除 pack.toml 缓存，强制阶段 3 重新同步
         let cache_path = base_dir.join(config::PACK_TOML_CACHE_FILE);
@@ -263,19 +266,18 @@ fn run_game_update(base_dir: &Path, on_progress: &dyn Fn(Progress)) -> Result<Up
     on_progress(Progress::new(79, "检查原版 MC 客户端..."));
     fabric::ensure_vanilla_client(base_dir, &remote.mc_version)?;
 
-    // ── 修正 PCL2 版本隔离设置 ──
-    // PCL2 会在版本目录下自动创建 Setup.ini 并启用隔离，
-    // 导致游戏目录指向 versions/<tag>/ 而非 .minecraft/，
-    // 每次启动前都需要修正为不隔离。
-    on_progress(Progress::new(79, "修正版本隔离设置..."));
-    fabric::fix_version_isolation(base_dir, &remote.version_tag)?;
+    if first_install {
+        fabric::initialize_version_isolation(base_dir, &remote.version_tag)?;
+    }
 
     // ─────────────────────────────────────────────
-    // 阶段 3: 同步模组和配置
+    // 阶段 3: 同步受管理模组
     // ─────────────────────────────────────────────
-    if version::is_pack_changed(base_dir, &remote.pack_toml_raw) {
+    if version::is_pack_changed(base_dir, &remote.pack_toml_raw)
+        || !base_dir.join(crate::managed_mods::MANIFEST).is_file()
+    {
         on_progress(Progress::new(80, "正在同步模组..."));
-        packwiz::sync_modpack(base_dir, &remote.pack_url)?;
+        packwiz::sync_modpack(base_dir, &remote.pack_url, first_install)?;
         version::save_pack_cache(base_dir, &remote.pack_toml_raw)?;
         on_progress(Progress::new(95, "模组同步完成"));
     } else {

@@ -27,9 +27,33 @@ pub fn is_bootstrapped(base_dir: &Path) -> bool {
     base_dir.join(config::PCL2_EXE).exists() && base_dir.join(config::LOCAL_VERSION_FILE).exists()
 }
 
+/// Decide before creating any game directories. An existing installation stays
+/// existing even if its updater markers or individual components were deleted.
+pub(crate) fn begin_first_install(base_dir: &Path) -> Result<bool> {
+    let marker = base_dir.join("updater/.initial_install_started");
+    let existing = [
+        config::MINECRAFT_DIR,
+        config::PCL2_EXE,
+        config::PCL2_SETUP_INI_PATH,
+        config::LOCAL_VERSION_FILE,
+        "updater/.settings_installed",
+    ].iter().any(|path| base_dir.join(path).symlink_metadata().is_ok());
+    fs::create_dir_all(base_dir.join("updater"))?;
+    match fs::OpenOptions::new().write(true).create_new(true).open(marker) {
+        Ok(mut file) => {
+            file.write_all(b"defaults may only be applied during this first attempt\n")?;
+            file.sync_all()?;
+            Ok(!existing)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error).context("记录首次安装状态失败"),
+    }
+}
+
 pub fn run_bootstrap(
     base_dir: &Path,
     downloads: &Downloads,
+    first_install: bool,
     on_progress: &dyn Fn(Progress),
 ) -> Result<()> {
     on_progress(Progress::new(2, "正在创建目录结构..."));
@@ -95,13 +119,13 @@ pub fn run_bootstrap(
     on_progress(Progress::new(46, "Fabric 安装器就绪"));
 
     let setup_ini = base_dir.join(config::PCL2_SETUP_INI_PATH);
-    if !setup_ini.exists() {
+    if first_install && !setup_ini.exists() {
         on_progress(Progress::new(47, "正在配置启动器..."));
-        fs::write(&setup_ini, config::PCL2_SETUP_INI).context("写入 Setup.ini 失败")?;
+        crate::managed_mods::create_default(base_dir, Path::new(config::PCL2_SETUP_INI_PATH), config::PCL2_SETUP_INI.as_bytes())?;
     }
 
     let settings_marker = base_dir.join("updater/.settings_installed");
-    if !settings_marker.exists() {
+    if first_install && !settings_marker.exists() {
         if let Some(ref settings_url) = downloads.settings_url {
             let settings_sha256 =
                 require_download_sha(downloads.settings_sha256.as_deref(), "settings_sha256")?;
@@ -127,7 +151,7 @@ pub fn run_bootstrap(
         fs::write(&settings_marker, "installed").context("写入设置安装标记失败")?;
     }
 
-    on_progress(Progress::new(50, "首次安装完成"));
+    on_progress(Progress::new(50, "组件准备完成"));
     Ok(())
 }
 
@@ -372,18 +396,11 @@ fn extract_settings_zip(zip_path: &Path, dest: &Path) -> Result<()> {
 
         let out_path = safe_zip_output_path(dest, &name)?;
 
-        if entry.is_dir() {
-            fs::create_dir_all(&out_path)?;
-        } else {
-            if out_path.exists() {
-                continue;
-            }
-            if let Some(parent) = out_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut outfile = fs::File::create(&out_path)
-                .with_context(|| format!("创建设置文件失败: {}", out_path.display()))?;
-            std::io::copy(&mut entry, &mut outfile)?;
+        if !entry.is_dir() {
+            let relative = out_path.strip_prefix(dest)?;
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+            crate::managed_mods::create_default(dest, relative, &content)?;
         }
     }
 

@@ -3,8 +3,8 @@
 // ============================================================
 // 负责：
 //   1. 调用 fabric-installer.jar 的 CLI 模式安装指定版本
-//   2. 清理旧的 versions/ 目录（只保留新版本）
-//   3. 清空 mods/ 目录（packwiz 会重新同步正确的模组）
+//   2. 为首次安装创建默认启动配置
+// 玩家已有版本目录和配置由玩家保留，更新不执行目录清理。
 // ============================================================
 
 use anyhow::{Context, Result, bail};
@@ -96,6 +96,13 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
     let installer_jar = base_dir.join(config::FABRIC_INSTALLER_JAR);
     let mc_dir = base_dir.join(config::MINECRAFT_DIR);
 
+    let version_tag = format!("fabric-loader-{fabric_version}-{mc_version}");
+    let installed = mc_dir.join("versions").join(&version_tag).join(format!("{version_tag}.json"));
+    if installed.exists() {
+        // Missing updater metadata must not reinstall over an existing profile.
+        return Ok(());
+    }
+
     crate::java::validate_installer_jar(&installer_jar, "Fabric")?;
 
     // 确保 .minecraft 目录存在
@@ -104,8 +111,7 @@ pub fn install_fabric(base_dir: &Path, mc_version: &str, fabric_version: &str) -
     // Fabric 安装器在非 -noprofile 模式下需要 launcher_profiles.json 存在
     let profiles_json = mc_dir.join("launcher_profiles.json");
     if !profiles_json.exists() {
-        fs::write(&profiles_json, r#"{"profiles":{}}"#)
-            .context("创建 launcher_profiles.json 失败")?;
+        crate::managed_mods::create_default(&mc_dir, Path::new("launcher_profiles.json"), br#"{"profiles":{}}"#)?;
     }
 
     // 前置验证 Java 可用
@@ -237,82 +243,6 @@ fn verify_java(java: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 清理旧的 versions/ 目录。
-///
-/// 扫描 .minecraft/versions/ 下的所有子目录，
-/// 只保留 `keep_tag` 指定的版本文件夹，删除其余所有。
-///
-/// 这确保玩家的 .minecraft/versions/ 里不会堆积旧版本文件。
-pub fn cleanup_old_versions(base_dir: &Path, keep_tag: &str) -> Result<()> {
-    let versions_dir = base_dir.join(config::MINECRAFT_DIR).join("versions");
-
-    if !versions_dir.exists() {
-        // 首次安装，还没有 versions 目录，无需清理
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(&versions_dir).context("读取 versions 目录失败")?;
-
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-
-        // 只处理目录
-        if !path.is_dir() {
-            continue;
-        }
-
-        // 获取目录名
-        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-
-        // 保留新版本的目录，删除其他
-        if dir_name == keep_tag {
-            continue;
-        }
-
-        // best-effort 清理：单个目录删除失败不阻断更新流程
-        // （文件可能被杀毒软件或资源管理器锁定）
-        if let Err(e) = fs::remove_dir_all(&path) {
-            eprintln!("清理旧版本目录失败（已跳过）: {dir_name}: {e}");
-        }
-    }
-
-    Ok(())
-}
-
-/// 清空 mods/ 目录中的所有 .jar 文件。
-///
-/// 大版本升级时，旧模组可能不兼容新版本，
-/// 所以先全部清空，然后由 packwiz 重新同步正确版本的模组。
-///
-/// 注意：只删除 .jar 文件，保留 packwiz-installer-bootstrap 不在此目录。
-pub fn clean_mods_dir(base_dir: &Path) -> Result<()> {
-    let mods_dir = base_dir.join(config::MINECRAFT_DIR).join("mods");
-
-    if !mods_dir.exists() {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(&mods_dir).context("读取 mods 目录失败")?;
-
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-
-        // 只删除 .jar 文件，best-effort（文件可能被游戏进程锁定）
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "jar") {
-            if let Err(e) = fs::remove_file(&path) {
-                eprintln!("删除模组失败（已跳过）: {}: {e}", path.display());
-            }
-        }
-    }
-
-    Ok(())
-}
-
 // ────────────────────────────────────────────────────────────
 // 原版 MC 下载
 // ────────────────────────────────────────────────────────────
@@ -328,47 +258,15 @@ pub fn ensure_vanilla_client(base_dir: &Path, mc_version: &str) -> Result<()> {
     download_vanilla_version(&mc_dir, mc_version)
 }
 
-/// 修正 PCL2 的版本级别隔离设置。
-///
-/// PCL2 在首次检测到 Fabric 版本时会在
-/// `versions/<version_tag>/PCL/Setup.ini` 中写入 `VersionArgumentIndieV2:True`，
-/// 这会导致游戏目录被隔离到该版本文件夹下，而 packwiz 安装模组到 `.minecraft/mods/`，
-/// 两者不一致导致游戏无法加载模组。
-///
-/// 本函数每次启动时调用，确保 `VersionArgumentIndieV2` 为 `False`。
-pub fn fix_version_isolation(base_dir: &Path, version_tag: &str) -> Result<()> {
-    let mc_dir = base_dir.join(config::MINECRAFT_DIR);
-    let pcl_dir = mc_dir.join("versions").join(version_tag).join("PCL");
-    let setup_ini = pcl_dir.join("Setup.ini");
-
-    if setup_ini.exists() {
-        // 读取现有文件并替换隔离设置
-        let content = fs::read_to_string(&setup_ini).context("读取版本级 Setup.ini 失败")?;
-
-        if content.contains("VersionArgumentIndieV2:True") {
-            let new_content = content.replace(
-                "VersionArgumentIndieV2:True",
-                "VersionArgumentIndieV2:False",
-            );
-            fs::write(&setup_ini, &new_content).context("写入版本级 Setup.ini 失败")?;
-        } else if !content.contains("VersionArgumentIndieV2:") {
-            // 文件存在但没有这个 key，追加
-            let mut new_content = content;
-            if !new_content.ends_with('\n') {
-                new_content.push('\n');
-            }
-            new_content.push_str("VersionArgumentIndieV2:False\n");
-            fs::write(&setup_ini, &new_content).context("写入版本级 Setup.ini 失败")?;
-        }
-        // 如果已经是 False 就不用改
-    } else {
-        // 文件还不存在（Fabric 安装后但 PCL2 还没运行过），提前创建
-        fs::create_dir_all(&pcl_dir).context("创建版本级 PCL 目录失败")?;
-        fs::write(&setup_ini, "VersionArgumentIndieV2:False\n")
-            .context("写入版本级 Setup.ini 失败")?;
-    }
-
-    Ok(())
+/// Initialize defaults during the first install only; never edit an existing
+/// PCL setup file or override a player's isolation preference.
+pub fn initialize_version_isolation(base_dir: &Path, version_tag: &str) -> Result<()> {
+    let relative = Path::new("versions").join(version_tag).join("PCL/Setup.ini");
+    crate::managed_mods::create_default(
+        &base_dir.join(config::MINECRAFT_DIR),
+        &relative,
+        b"VersionArgumentIndieV2:False\n",
+    )
 }
 
 /// 下载原版 MC 客户端的 version JSON 和 client.jar。
