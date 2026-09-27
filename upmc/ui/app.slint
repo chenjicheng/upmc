@@ -249,3 +249,20 @@ export component LogWindow inherits Window {
   TextEdit { text: root.log-text; read-only: true; vertical-stretch: 1; min-height: 240px; }
  }
 }
+
+export component RetirementNotice inherits Window {
+ title: "UPMC 已停用";
+ preferred-width: 460px; preferred-height: 200px;
+ min-width: 400px; min-height: 180px;
+ background: #f6f7f5;
+ default-font-family: "Microsoft YaHei UI";
+ in property <string> heading: "UPMC 启动器已停止服务";
+ in property <string> instruction: "请删除本软件，不再使用。";
+ VerticalBox {
+  padding: 28px; spacing: 18px;
+  Rectangle { vertical-stretch: 1; }
+  Text { text: root.heading; color: #28332c; font-size: 21px; font-weight: 600; horizontal-alignment: center; }
+  Text { text: root.instruction; color: #435044; font-size: 15px; horizontal-alignment: center; }
+  Rectangle { vertical-stretch: 1; }
+ }
+}
