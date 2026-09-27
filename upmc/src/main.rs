@@ -1,12 +1,8 @@
 // ============================================================
-// main.rs — 程序入口
+// main.rs — 停用版程序入口
 // ============================================================
-// 职责：
-//   1. 解析命令行参数（--channel dev/stable）
-//   2. 确定安装基准路径（用户文档文件夹），并处理旧位置迁移
-//   3. 读取/持久化更新通道选择
-//   4. 隐藏控制台窗口（release 模式下）
-//   5. 启动 GUI
+// 保留自更新 helper 和健康确认，使现有安装能够安全升级。
+// 普通启动只显示停用通知，不进入旧版安装或游戏流程。
 // ============================================================
 
 // 在 release 模式下隐藏控制台黑框
@@ -17,22 +13,26 @@ mod bootstrap;
 mod config;
 mod discord_proxy;
 mod fabric;
+#[cfg(test)]
 mod gui;
 mod gui_state;
 mod gui_switches;
 mod java;
-mod managed_mods;
 #[cfg(test)]
 mod java_test_fixture;
+mod managed_mods;
 mod observability;
 mod packwiz;
+mod retirement;
 mod retry;
 mod selfupdate;
 mod update;
 mod version;
 mod xray;
 
+#[cfg(test)]
 use config::{ChannelConfig, UpdateChannel};
+#[cfg(test)]
 use std::path::PathBuf;
 
 fn main() {
@@ -73,24 +73,21 @@ fn main() {
         selfupdate::cleanup_old_exe();
     }
 
-    // 获取安装基准路径（用户文档文件夹）
-    // 如果旧位置有安装，先迁移到新位置
-    let base_dir = get_base_dir();
-
-    // 解析命令行参数，确定更新通道
-    let channel_config = resolve_channel(&base_dir);
-
     if let Some(ack) = startup_health {
         selfupdate::acknowledge_health_when_window_ready(ack);
     }
 
-    // 启动 GUI（内部会开后台线程执行更新）
-    gui::UpdaterApp::run(base_dir, channel_config);
+    // The retirement release never enters the old update, proxy, or game flow.
+    if let Err(error) = retirement::run() {
+        eprintln!("停用提示窗口启动失败：{error}");
+        std::process::exit(1);
+    }
 }
 
 /// 解析更新通道。
 ///
 /// 优先级：命令行参数 > channel.json（设置窗口保存） > 编译期默认值
+#[cfg(test)]
 fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
     let args: Vec<String> = std::env::args().collect();
     let mut cli_channel: Option<UpdateChannel> = None;
@@ -153,6 +150,7 @@ fn resolve_channel(base_dir: &std::path::Path) -> ChannelConfig {
 ///
 /// 如果检测到旧版安装目录（exe 同级的 CJC整合包/），
 /// 会自动将其迁移到文档文件夹。
+#[cfg(test)]
 fn get_base_dir() -> PathBuf {
     let new_dir = config::get_install_dir();
     let legacy_dir = config::get_legacy_install_dir();
